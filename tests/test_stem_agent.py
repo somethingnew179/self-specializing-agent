@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -8,7 +9,33 @@ from stem_agent import RunState, TurnResult, Usage
 from stem_agent.backends import CodexExecBackend
 from stem_agent.cli import main
 from stem_agent.codex_json import build_codex_command, parse_events, parse_usage
+from stem_agent.graph import END_NODE, parse_node_output, validate_graph, write_graph
+from stem_agent.graph_runner import GraphRunner
 from stem_agent.policies import BudgetPolicy, StopPolicy
+
+
+def graph_turn(text, output_tokens=1, saw_usage=True):
+    return TurnResult(
+        "session",
+        text,
+        Usage(output_tokens=output_tokens, total_tokens=output_tokens),
+        saw_usage,
+    )
+
+
+class FakeBackend:
+    def __init__(self, actions):
+        self.actions = list(actions)
+        self.prompts = []
+
+    def run(self, prompt, session_id=None):
+        self.prompts.append(prompt)
+        if not self.actions:
+            raise RuntimeError("no fake backend actions left")
+        action = self.actions.pop(0)
+        if callable(action):
+            return action(prompt)
+        return action
 
 
 class StemAgentTests(unittest.TestCase):
@@ -214,7 +241,10 @@ class StemAgentTests(unittest.TestCase):
 
         with patch("stem_agent.backends.CodexExecBackend.run", return_value=result):
             with patch("sys.stdout", new=io.StringIO()) as stdout:
-                self.assertEqual(main(["hello", "--output-budget", "100", "--max-turns", "1"]), 0)
+                self.assertEqual(
+                    main(["hello", "--output-budget", "100", "--max-turns", "1"]),
+                    0,
+                )
 
         self.assertIn("stop=max_turns_spent", stdout.getvalue())
 
@@ -263,6 +293,201 @@ class StemAgentTests(unittest.TestCase):
                 self.assertEqual(main(["hello", "--output-budget", "0"]), 0)
 
         self.assertIn("stop=output_budget_spent", stdout.getvalue())
+
+
+class GraphTests(unittest.TestCase):
+    def valid_graph(self):
+        return {
+            "version": 1,
+            "start": "work",
+            "architect": {
+                "model": "gpt-5.2",
+                "effort": "high",
+                "prompt": "Fix the graph.",
+            },
+            "nodes": {
+                "work": {
+                    "model": "gpt-5.2",
+                    "effort": "medium",
+                    "prompt": "Do the work.",
+                    "result_schema": {
+                        "type": "object",
+                        "required": ["summary"],
+                        "properties": {"summary": {"type": "string"}},
+                        "additionalProperties": False,
+                    },
+                    "routes": {"done": END_NODE},
+                }
+            },
+        }
+
+    def test_valid_graph_passes_validation(self):
+        self.assertEqual(validate_graph(self.valid_graph()), [])
+
+    def test_graph_validation_rejects_unknown_route_target(self):
+        graph = self.valid_graph()
+        graph["nodes"]["work"]["routes"]["missing"] = "missing"
+
+        errors = validate_graph(graph)
+
+        self.assertTrue(any("unknown target 'missing'" in error for error in errors))
+
+    def test_graph_validation_rejects_bad_result_schema(self):
+        graph = self.valid_graph()
+        graph["nodes"]["work"]["result_schema"] = {"type": "bad"}
+
+        errors = validate_graph(graph)
+
+        self.assertTrue(any("unsupported JSON Schema type" in error for error in errors))
+
+    def test_parse_node_output_validates_result_schema(self):
+        schema = {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {"summary": {"type": "string"}},
+        }
+
+        parsed, errors = parse_node_output(
+            '{"route":"done","result":{"summary":"ok"}}',
+            schema,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed.route, "done")
+        self.assertEqual(parsed.result, {"summary": "ok"})
+
+    def test_parse_node_output_rejects_bad_result(self):
+        schema = {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {"summary": {"type": "string"}},
+        }
+
+        parsed, errors = parse_node_output('{"route":"done","result":{}}', schema)
+
+        self.assertIsNone(parsed)
+        self.assertTrue(any("missing required property" in error for error in errors))
+
+    def test_graph_runner_executes_node_and_logs_transition(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            log_path = os.path.join(tmpdir, "events.jsonl")
+            write_graph(graph_path, self.valid_graph())
+            backend = FakeBackend(
+                [graph_turn('{"route":"done","result":{"summary":"ok"}}')]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+                events_log=log_path,
+            ).run("task")
+
+            self.assertEqual(outcome.stop_reason, "graph_finished")
+            self.assertIsNone(outcome.error)
+            self.assertEqual(outcome.context[-1]["result"], {"summary": "ok"})
+            with open(log_path, encoding="utf-8") as handle:
+                events = [json.loads(line) for line in handle]
+            self.assertIn("node_called", [event["type"] for event in events])
+            self.assertIn("node_result", [event["type"] for event in events])
+            self.assertIn("transition", [event["type"] for event in events])
+
+    def test_graph_runner_calls_architect_on_invalid_node_output(self):
+        graph = self.valid_graph()
+        graph["nodes"]["finish"] = {
+            "prompt": "Finish.",
+            "result_schema": {
+                "type": "object",
+                "required": ["summary"],
+                "properties": {"summary": {"type": "string"}},
+            },
+            "routes": {"done": END_NODE},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            write_graph(graph_path, graph)
+            backend = FakeBackend(
+                [
+                    graph_turn('{"route":"unknown","result":{"summary":"bad route"}}'),
+                    graph_turn('{"next_node":"finish"}'),
+                    graph_turn('{"route":"done","result":{"summary":"fixed"}}'),
+                ]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+            ).run("task")
+
+            self.assertEqual(outcome.stop_reason, "graph_finished")
+            self.assertEqual(outcome.context[-1]["node"], "finish")
+            self.assertTrue(any("node_failed" in prompt for prompt in backend.prompts))
+
+    def test_graph_runner_retries_architect_until_graph_is_valid(self):
+        invalid_graph = self.valid_graph()
+        invalid_graph["start"] = "missing"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            log_path = os.path.join(tmpdir, "events.jsonl")
+            write_graph(graph_path, invalid_graph)
+
+            def fix_graph(prompt):
+                write_graph(graph_path, self.valid_graph())
+                return graph_turn('{"next_node":"work"}')
+
+            backend = FakeBackend(
+                [
+                    graph_turn('{"next_node":"work"}'),
+                    fix_graph,
+                    graph_turn('{"route":"done","result":{"summary":"ok"}}'),
+                ]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+                events_log=log_path,
+                architect_retries=2,
+            ).run("task")
+
+            self.assertEqual(outcome.stop_reason, "graph_finished")
+            with open(log_path, encoding="utf-8") as handle:
+                events = [json.loads(line) for line in handle]
+            self.assertIn("retry", [event["type"] for event in events])
+
+    def test_graph_runner_fails_closed_after_architect_retry_limit(self):
+        invalid_graph = self.valid_graph()
+        invalid_graph["start"] = "missing"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            write_graph(graph_path, invalid_graph)
+            backend = FakeBackend([graph_turn('{"next_node":"work"}')])
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+                architect_retries=0,
+            ).run("task")
+
+            self.assertEqual(outcome.error, "graph_validation_error")
+
+    def test_graph_cli_does_not_require_output_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            write_graph(graph_path, self.valid_graph())
+            fake_backend = FakeBackend(
+                [graph_turn('{"route":"done","result":{"summary":"ok"}}')]
+            )
+
+            with patch("stem_agent.graph_runner.CodexExecBackend", return_value=fake_backend):
+                with patch("sys.stdout", new=io.StringIO()) as stdout:
+                    self.assertEqual(main(["--graph", graph_path, "task"]), 0)
+
+            self.assertIn('result={"summary":"ok"}', stdout.getvalue())
+            self.assertIn("stop=graph_finished", stdout.getvalue())
 
 
 @unittest.skipUnless(

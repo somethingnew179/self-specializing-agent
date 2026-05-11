@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .json_schema import check_schema, validate_instance
+
+ARCHITECT_NODE = "__architect__"
+END_NODE = "__end__"
+
+
+@dataclass(frozen=True)
+class AgentSettings:
+    model: str | None = None
+    effort: str | None = None
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class NodeOutput:
+    route: str
+    result: dict[str, Any]
+
+
+def bootstrap_graph(model: str | None = None) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "start": "architect",
+        "architect": {
+            "model": model or "gpt-5.2",
+            "effort": "high",
+            "prompt": "Design or repair the agent graph for the user task.",
+        },
+        "nodes": {},
+    }
+
+
+def ensure_graph_file(path: str | Path, *, model: str | None = None) -> bool:
+    graph_path = Path(path)
+    if graph_path.exists() and graph_path.read_text(encoding="utf-8").strip():
+        return False
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    write_graph(graph_path, bootstrap_graph(model))
+    return True
+
+
+def load_graph(path: str | Path) -> dict[str, Any]:
+    with Path(path).open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError("graph root must be an object")
+    return value
+
+
+def write_graph(path: str | Path, graph: dict[str, Any]) -> None:
+    with Path(path).open("w", encoding="utf-8") as handle:
+        json.dump(graph, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def validate_graph(graph: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if graph.get("version") != 1:
+        errors.append("$.version: must be 1")
+
+    start = graph.get("start")
+    if not isinstance(start, str) or not start:
+        errors.append("$.start: must be a non-empty string")
+
+    architect = graph.get("architect")
+    if not isinstance(architect, dict):
+        errors.append("$.architect: must be an object")
+    else:
+        errors.extend(_validate_agent_settings("$.architect", architect, require_prompt=True))
+
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, dict):
+        errors.append("$.nodes: must be an object")
+        nodes = {}
+
+    if isinstance(start, str) and start not in {"architect", ARCHITECT_NODE, END_NODE}:
+        if start not in nodes:
+            errors.append(f"$.start: unknown node {start!r}")
+
+    for node_id, node in nodes.items():
+        if not isinstance(node_id, str) or not node_id:
+            errors.append("$.nodes: node ids must be non-empty strings")
+            continue
+        if node_id in {ARCHITECT_NODE, END_NODE, "architect"}:
+            errors.append(f"$.nodes.{node_id}: reserved node id")
+        if not isinstance(node, dict):
+            errors.append(f"$.nodes.{node_id}: must be an object")
+            continue
+        errors.extend(_validate_node(node_id, node, nodes))
+
+    return errors
+
+
+def parse_agent_settings(value: dict[str, Any]) -> AgentSettings:
+    params = value.get("params", {})
+    return AgentSettings(
+        model=value.get("model"),
+        effort=value.get("effort"),
+        params=params if isinstance(params, dict) else {},
+    )
+
+
+def parse_node_output(text: str, result_schema: dict[str, Any]) -> tuple[NodeOutput | None, list[str]]:
+    try:
+        value = json.loads(text.strip())
+    except json.JSONDecodeError as error:
+        return None, [f"node output must be a JSON object: {error.msg}"]
+
+    if not isinstance(value, dict):
+        return None, ["node output must be a JSON object"]
+    route = value.get("route")
+    result = value.get("result")
+    errors: list[str] = []
+    if not isinstance(route, str) or not route:
+        errors.append("$.route: must be a non-empty string")
+    if not isinstance(result, dict):
+        errors.append("$.result: must be an object")
+    elif isinstance(result_schema, dict):
+        errors.extend(validate_instance(result, result_schema))
+    if errors:
+        return None, errors
+    return NodeOutput(route, result), []
+
+
+def parse_architect_output(text: str) -> tuple[str | None, list[str]]:
+    try:
+        value = json.loads(text.strip())
+    except json.JSONDecodeError as error:
+        return None, [f"architect output must be JSON: {error.msg}"]
+    if not isinstance(value, dict):
+        return None, ["architect output must be a JSON object"]
+    next_node = value.get("next_node")
+    if not isinstance(next_node, str) or not next_node:
+        return None, ["$.next_node: must be a non-empty string"]
+    return next_node, []
+
+
+def build_node_prompt(
+    *,
+    user_task: str,
+    node_id: str,
+    node: dict[str, Any],
+    context: list[dict[str, Any]],
+) -> str:
+    allowed_routes = sorted(node["routes"].keys())
+    payload = {
+        "user_task": user_task,
+        "node_id": node_id,
+        "prompt": node["prompt"],
+        "agent_settings": {
+            "model": node.get("model"),
+            "effort": node.get("effort"),
+            "params": node.get("params", {}),
+        },
+        "result_schema": node["result_schema"],
+        "allowed_routes": allowed_routes,
+        "context": context,
+        "response_format": {
+            "route": "one of allowed_routes",
+            "result": "object matching result_schema",
+        },
+    }
+    return (
+        "You are executing one node in a small agent graph. "
+        "Do not describe the graph. Return only one JSON object.\n"
+        + json.dumps(payload, indent=2, sort_keys=True)
+    )
+
+
+def build_architect_prompt(
+    *,
+    user_task: str,
+    graph_path: Path,
+    graph: dict[str, Any] | None,
+    architect_prompt: str,
+    context: list[dict[str, Any]],
+    issue: str,
+    errors: list[str],
+) -> str:
+    payload = {
+        "role": "architect",
+        "user_task": user_task,
+        "architect_prompt": architect_prompt,
+        "graph_path": str(graph_path),
+        "issue": issue,
+        "errors": errors,
+        "current_graph": graph,
+        "context": context,
+        "instructions": [
+            "Edit graph_path directly so it is a valid version 1 graph.",
+            "Keep the graph as small as possible.",
+            "Use JSON Schema in each node.result_schema.",
+            f"Use {ARCHITECT_NODE} to route back to the architect.",
+            f"Use {END_NODE} to finish.",
+            "Return only JSON in the form {\"next_node\":\"node_id\"}.",
+        ],
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _validate_node(
+    node_id: str,
+    node: dict[str, Any],
+    nodes: dict[str, Any],
+) -> list[str]:
+    path = f"$.nodes.{node_id}"
+    errors = _validate_agent_settings(path, node, require_prompt=True)
+
+    result_schema = node.get("result_schema")
+    if not isinstance(result_schema, dict):
+        errors.append(f"{path}.result_schema: must be an object")
+    else:
+        errors.extend(check_schema(result_schema, f"{path}.result_schema"))
+
+    routes = node.get("routes")
+    if not isinstance(routes, dict) or not routes:
+        errors.append(f"{path}.routes: must be a non-empty object")
+    else:
+        for route, target in routes.items():
+            if not isinstance(route, str) or not route:
+                errors.append(f"{path}.routes: route names must be non-empty strings")
+            if not isinstance(target, str) or not target:
+                errors.append(f"{path}.routes.{route}: target must be a non-empty string")
+            elif target not in {ARCHITECT_NODE, END_NODE} and target not in nodes:
+                errors.append(f"{path}.routes.{route}: unknown target {target!r}")
+
+    return errors
+
+
+def _validate_agent_settings(
+    path: str,
+    value: dict[str, Any],
+    *,
+    require_prompt: bool,
+) -> list[str]:
+    errors: list[str] = []
+    if require_prompt and not isinstance(value.get("prompt"), str):
+        errors.append(f"{path}.prompt: must be a string")
+    if "model" in value and value["model"] is not None and not isinstance(value["model"], str):
+        errors.append(f"{path}.model: must be a string")
+    if "effort" in value and value["effort"] is not None and not isinstance(value["effort"], str):
+        errors.append(f"{path}.effort: must be a string")
+    if "params" in value and value["params"] is not None and not isinstance(value["params"], dict):
+        errors.append(f"{path}.params: must be an object")
+    return errors

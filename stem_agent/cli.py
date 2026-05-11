@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from .backends import CodexExecBackend
+from .graph_runner import GraphRunner
 from .models import RunState
 from .policies import BudgetPolicy
 from .runner import AgentLoop, TurnSnapshot
@@ -13,9 +15,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    output_budget = resolve_output_budget(parser, args)
     validate_args(parser, args)
 
+    if args.graph:
+        return run_graph_mode(args)
+
+    output_budget = resolve_output_budget(parser, args)
     backend = CodexExecBackend.from_args(args)
     loop = AgentLoop(
         backend,
@@ -41,6 +46,33 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def run_graph_mode(args: argparse.Namespace) -> int:
+    runner = GraphRunner(
+        args.graph,
+        events_log=args.events_log,
+        model=args.model,
+        cd=args.cd,
+        sandbox=args.sandbox,
+        allow_missing_usage=args.allow_missing_usage,
+        max_steps=args.graph_max_steps,
+        architect_retries=args.architect_retries,
+    )
+    outcome = runner.run(read_prompt(args.prompt))
+
+    if outcome.error:
+        print(f"error={outcome.error}", file=sys.stderr)
+        return 1
+
+    if outcome.context:
+        print(
+            "result="
+            + json.dumps(outcome.context[-1]["result"], separators=(",", ":"), sort_keys=True)
+        )
+    if outcome.stop_reason:
+        print(f"stop={outcome.stop_reason} steps={len(outcome.context)}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("prompt")
@@ -52,6 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model")
     parser.add_argument("--cd")
     parser.add_argument("--sandbox")
+    parser.add_argument("--graph")
+    parser.add_argument("--graph-max-steps", type=int, default=20)
+    parser.add_argument("--architect-retries", type=int, default=2)
     parser.add_argument(
         "--allow-missing-usage",
         action="store_true",
@@ -74,14 +109,22 @@ def resolve_output_budget(parser: argparse.ArgumentParser, args: argparse.Namesp
 
 
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if not args.graph:
+        resolve_output_budget(parser, args)
     if args.total_budget is not None and args.total_budget < 0:
         parser.error("--total-budget must be >= 0")
     if args.max_turns is not None and args.max_turns < 0:
         parser.error("--max-turns must be >= 0")
+    if args.graph_max_steps < 0:
+        parser.error("--graph-max-steps must be >= 0")
+    if args.architect_retries < 0:
+        parser.error("--architect-retries must be >= 0")
     if args.resume and args.cd:
         parser.error("--cd cannot be used with --resume")
     if args.resume and args.sandbox:
         parser.error("--sandbox cannot be used with --resume")
+    if args.graph and args.resume:
+        parser.error("--resume cannot be used with --graph")
 
 
 def read_prompt(value: str) -> str:
