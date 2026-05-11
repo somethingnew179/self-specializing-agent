@@ -20,6 +20,7 @@ from .graph import (
     validate_graph,
 )
 from .models import TurnResult, Usage
+from .progress import SingleLineProgress
 
 BackendFactory = Callable[[AgentSettings], Backend]
 
@@ -45,6 +46,7 @@ class GraphRunner:
         allow_missing_usage: bool = False,
         max_steps: int = 20,
         architect_retries: int = 2,
+        console_log: bool = False,
     ) -> None:
         self.graph_path = Path(graph_path).resolve()
         self.events = JsonlEventLog(events_log)
@@ -54,7 +56,8 @@ class GraphRunner:
         self.allow_missing_usage = allow_missing_usage
         self.max_steps = max_steps
         self.architect_retries = architect_retries
-        self.backend_factory = backend_factory or self._default_backend_factory
+        self.console_log = console_log
+        self.backend_factory = backend_factory
 
     def run(self, user_task: str) -> GraphRunOutcome:
         context: list[dict] = []
@@ -179,11 +182,21 @@ class GraphRunner:
             current = target
             steps += 1
 
-    def _default_backend_factory(self, settings: AgentSettings) -> Backend:
+    def _backend_for(self, settings: AgentSettings, label: str) -> Backend:
+        if self.backend_factory is not None:
+            return self.backend_factory(settings)
+        return self._default_backend_factory(settings, label)
+
+    def _default_backend_factory(
+        self,
+        settings: AgentSettings,
+        label: str = "",
+    ) -> Backend:
         return CodexExecBackend(
             model=settings.model or self.model,
             cd=self.cd,
             sandbox=self.sandbox,
+            progress=SingleLineProgress(label) if self.console_log else None,
         )
 
     def _load_and_validate_graph(self) -> tuple[dict, list[str]]:
@@ -223,7 +236,7 @@ class GraphRunner:
             routes=sorted(node["routes"].keys()),
         )
         try:
-            turn = self.backend_factory(settings).run(prompt)
+            turn = self._backend_for(settings, f"node:{node_id}").run(prompt)
         except RuntimeError as error:
             self.events.write("node_failed", node=node_id, error=str(error))
             return None, Usage(), str(error)
@@ -342,7 +355,7 @@ class GraphRunner:
             errors=errors,
         )
         try:
-            turn = self.backend_factory(settings).run(prompt)
+            turn = self._backend_for(settings, "architect").run(prompt)
         except RuntimeError as error:
             self.events.write("architect_failed", attempt=attempt, error=str(error))
             return "", graph, Usage(), str(error)

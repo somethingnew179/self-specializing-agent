@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "self-specializing-agent"
+version = "0.1.0"
+description = "A small stem-agent CLI for graph-driven agent loops."
+requires-python = ">=3.11"
+
+[project.scripts]
+stem-agent = "stem_agent.cli:main"
+
+[tool.setuptools]
+packages = ["stem_agent"]

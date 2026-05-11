@@ -4,8 +4,14 @@ import subprocess
 from dataclasses import dataclass
 from typing import Protocol
 
-from .codex_json import build_codex_command, parse_events
+from .codex_json import (
+    CodexEventAccumulator,
+    build_codex_command,
+    parse_event_line,
+    parse_events,
+)
 from .models import TurnResult
+from .progress import SingleLineProgress
 
 
 class Backend(Protocol):
@@ -27,8 +33,10 @@ class CodexExecBackend:
         model: str | None = None,
         cd: str | None = None,
         sandbox: str | None = None,
+        progress: SingleLineProgress | None = None,
     ) -> None:
         self.config = CodexExecConfig(model=model, cd=cd, sandbox=sandbox)
+        self.progress = progress
 
     @classmethod
     def from_args(cls, args: object) -> "CodexExecBackend":
@@ -52,6 +60,9 @@ class CodexExecBackend:
         )
 
     def run(self, prompt: str, session_id: str | None = None) -> TurnResult:
+        if self.progress is not None:
+            return self._run_streaming(prompt, session_id)
+
         result = subprocess.run(
             self.build_codex_command(prompt, session_id),
             text=True,
@@ -62,3 +73,49 @@ class CodexExecBackend:
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip())
         return parse_events(result.stdout)
+
+    def _run_streaming(
+        self,
+        prompt: str,
+        session_id: str | None = None,
+    ) -> TurnResult:
+        process = subprocess.Popen(
+            self.build_codex_command(prompt, session_id),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+        )
+        accumulator = CodexEventAccumulator()
+        stdout_lines: list[str] = []
+        assert self.progress is not None
+        self.progress.start()
+
+        try:
+            assert process.stdout is not None
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                stdout_lines.append(line)
+                event = parse_event_line(line)
+                accumulator.add(event)
+                self.progress.event(str(event.get("type", "-")))
+
+            returncode = process.wait()
+            stderr = process.stderr.read() if process.stderr is not None else ""
+            if returncode != 0:
+                message = stderr.strip() or "\n".join(stdout_lines).strip()
+                self.progress.failed(message)
+                raise RuntimeError(message)
+
+            result = accumulator.result()
+            self.progress.finish(result)
+            return result
+        except Exception as error:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if not isinstance(error, RuntimeError):
+                self.progress.failed(str(error))
+            raise

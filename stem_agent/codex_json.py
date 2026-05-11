@@ -11,34 +11,57 @@ def parse_usage(value: dict[str, Any] | None) -> Usage:
 
 
 def parse_events(stdout: str) -> TurnResult:
-    session_id = None
-    last_text = ""
-    usage = Usage()
-    saw_usage = False
-    raw_events: list[dict[str, Any]] = []
+    accumulator = CodexEventAccumulator()
 
     for line in stdout.splitlines():
         line = line.strip()
         if not line:
             continue
 
-        event = json.loads(line)
-        raw_events.append(event)
+        accumulator.add(parse_event_line(line))
+
+    return accumulator.result()
+
+
+def parse_event_line(line: str) -> dict[str, Any]:
+    event = json.loads(line)
+    if not isinstance(event, dict):
+        raise ValueError("codex event must be a JSON object")
+    return event
+
+
+class CodexEventAccumulator:
+    def __init__(self) -> None:
+        self.session_id: str | None = None
+        self.last_text = ""
+        self.usage = Usage()
+        self.saw_usage = False
+        self.raw_events: list[dict[str, Any]] = []
+
+    def add(self, event: dict[str, Any]) -> None:
+        self.raw_events.append(event)
         event_type = event.get("type")
 
         if event_type == "thread.started":
-            session_id = event.get("thread_id")
+            self.session_id = event.get("thread_id")
         elif event_type == "item.completed":
             item = event.get("item", {})
             if item.get("type") == "agent_message":
-                last_text = item.get("text", "")
+                self.last_text = item.get("text", "")
         elif event_type == "turn.completed":
             event_usage = event.get("usage")
             if event_usage:
-                usage = parse_usage(event_usage)
-                saw_usage = True
+                self.usage = parse_usage(event_usage)
+                self.saw_usage = True
 
-    return TurnResult(session_id, last_text, usage, saw_usage, tuple(raw_events))
+    def result(self) -> TurnResult:
+        return TurnResult(
+            self.session_id,
+            self.last_text,
+            self.usage,
+            self.saw_usage,
+            tuple(self.raw_events),
+        )
 
 
 def build_codex_command(

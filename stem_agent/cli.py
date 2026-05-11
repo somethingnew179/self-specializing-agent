@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .backends import CodexExecBackend
 from .graph_runner import GraphRunner
@@ -12,14 +13,35 @@ from .runner import AgentLoop, TurnSnapshot
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        build_parser().print_help()
+        return 0
+    if argv[0] in {"-h", "--help"}:
+        build_parser().parse_args(argv)
+        return 0
+    if argv and argv[0] == "graph":
+        parser = build_graph_parser()
+        args = parser.parse_args(argv[1:])
+        validate_graph_args(parser, args)
+        return run_graph_mode(args)
+    if argv and argv[0] == "run":
+        parser = build_run_parser()
+        args = parser.parse_args(argv[1:])
+        validate_run_args(parser, args)
+        return run_direct_mode(parser, args)
 
-    validate_args(parser, args)
+    parser = build_legacy_parser()
+    args = parser.parse_args(argv)
+    validate_legacy_args(parser, args)
 
     if args.graph:
         return run_graph_mode(args)
 
+    return run_direct_mode(parser, args)
+
+
+def run_direct_mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     output_budget = resolve_output_budget(parser, args)
     backend = CodexExecBackend.from_args(args)
     loop = AgentLoop(
@@ -47,15 +69,26 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_graph_mode(args: argparse.Namespace) -> int:
+    project = Path(getattr(args, "project", ".")).expanduser().resolve()
+    smart_defaults = getattr(args, "smart_defaults", False)
+    graph_path = resolve_project_path(project, args.graph or ".agents/graph.json")
+    events_log = None
+    if args.events_log:
+        events_log = resolve_project_path(project, args.events_log)
+    elif smart_defaults:
+        events_log = resolve_project_path(project, ".agents/run.jsonl")
+    cd = resolve_project_path(project, args.cd) if args.cd else str(project)
+
     runner = GraphRunner(
-        args.graph,
-        events_log=args.events_log,
+        graph_path,
+        events_log=events_log,
         model=args.model,
-        cd=args.cd,
+        cd=cd,
         sandbox=args.sandbox,
         allow_missing_usage=args.allow_missing_usage,
         max_steps=args.graph_max_steps,
         architect_retries=args.architect_retries,
+        console_log=True,
     )
     outcome = runner.run(read_prompt(args.prompt))
 
@@ -75,6 +108,37 @@ def run_graph_mode(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    add_graph_arguments(subparsers.add_parser("graph"))
+    add_run_arguments(subparsers.add_parser("run"))
+    return parser
+
+
+def build_legacy_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    add_run_arguments(parser)
+    parser.add_argument("--graph")
+    parser.add_argument("--project", default=".")
+    parser.add_argument("--graph-max-steps", type=int, default=20)
+    parser.add_argument("--architect-retries", type=int, default=2)
+    parser.set_defaults(smart_defaults=False)
+    return parser
+
+
+def build_graph_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="stem-agent graph")
+    add_graph_arguments(parser)
+    parser.set_defaults(smart_defaults=True)
+    return parser
+
+
+def build_run_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="stem-agent run")
+    add_run_arguments(parser)
+    return parser
+
+
+def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("prompt")
     parser.add_argument("--budget", type=int, help="Deprecated alias for --output-budget")
     parser.add_argument("--output-budget", type=int)
@@ -84,16 +148,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model")
     parser.add_argument("--cd")
     parser.add_argument("--sandbox")
-    parser.add_argument("--graph")
-    parser.add_argument("--graph-max-steps", type=int, default=20)
-    parser.add_argument("--architect-retries", type=int, default=2)
     parser.add_argument(
         "--allow-missing-usage",
         action="store_true",
         help="Continue with zero token usage if codex does not emit usage",
     )
     parser.add_argument("--events-log")
-    return parser
+
+
+def add_graph_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("prompt")
+    parser.add_argument("--project", default=".")
+    parser.add_argument("--graph")
+    parser.add_argument("--events-log")
+    parser.add_argument("--model")
+    parser.add_argument("--cd")
+    parser.add_argument("--sandbox", default="workspace-write")
+    parser.add_argument("--graph-max-steps", type=int, default=20)
+    parser.add_argument("--architect-retries", type=int, default=2)
+    parser.add_argument(
+        "--allow-missing-usage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Continue with zero token usage if codex does not emit usage",
+    )
 
 
 def resolve_output_budget(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
@@ -108,23 +186,37 @@ def resolve_output_budget(parser: argparse.ArgumentParser, args: argparse.Namesp
     return output_budget
 
 
-def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if not args.graph:
-        resolve_output_budget(parser, args)
+def validate_legacy_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.graph:
+        validate_graph_args(parser, args)
+    else:
+        validate_run_args(parser, args)
+
+
+def validate_run_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    resolve_output_budget(parser, args)
     if args.total_budget is not None and args.total_budget < 0:
         parser.error("--total-budget must be >= 0")
     if args.max_turns is not None and args.max_turns < 0:
         parser.error("--max-turns must be >= 0")
-    if args.graph_max_steps < 0:
-        parser.error("--graph-max-steps must be >= 0")
-    if args.architect_retries < 0:
-        parser.error("--architect-retries must be >= 0")
     if args.resume and args.cd:
         parser.error("--cd cannot be used with --resume")
     if args.resume and args.sandbox:
         parser.error("--sandbox cannot be used with --resume")
-    if args.graph and args.resume:
-        parser.error("--resume cannot be used with --graph")
+
+
+def validate_graph_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.graph_max_steps < 0:
+        parser.error("--graph-max-steps must be >= 0")
+    if args.architect_retries < 0:
+        parser.error("--architect-retries must be >= 0")
+
+
+def resolve_project_path(project: Path, value: str | Path) -> str:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = project / path
+    return str(path.resolve())
 
 
 def read_prompt(value: str) -> str:

@@ -1,8 +1,10 @@
 import io
 import json
 import os
+import tomllib
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from stem_agent import RunState, TurnResult, Usage
@@ -12,6 +14,7 @@ from stem_agent.codex_json import build_codex_command, parse_events, parse_usage
 from stem_agent.graph import END_NODE, parse_node_output, validate_graph, write_graph
 from stem_agent.graph_runner import GraphRunner
 from stem_agent.policies import BudgetPolicy, StopPolicy
+from stem_agent.progress import SingleLineProgress
 
 
 def graph_turn(text, output_tokens=1, saw_usage=True):
@@ -36,6 +39,56 @@ class FakeBackend:
         if callable(action):
             return action(prompt)
         return action
+
+
+class FakePopen:
+    def __init__(self, lines, returncode=0, stderr=""):
+        self.stdout = iter(lines)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = returncode
+        self.killed = False
+
+    def wait(self):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+class ProgressFakeBackend:
+    def __init__(self, *args, **kwargs):
+        self.progress = kwargs.get("progress")
+
+    def run(self, prompt, session_id=None):
+        result = graph_turn('{"route":"done","result":{"summary":"ok"}}')
+        if self.progress:
+            self.progress.start()
+            self.progress.event("thread.started")
+            self.progress.finish(result)
+        return result
+
+
+class FakeGraphRunner:
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
+    def run(self, prompt):
+        self.prompt = prompt
+        return type(
+            "Outcome",
+            (),
+            {
+                "error": None,
+                "context": [{"result": {"summary": "ok"}}],
+                "stop_reason": "graph_finished",
+            },
+        )()
 
 
 class StemAgentTests(unittest.TestCase):
@@ -162,6 +215,46 @@ class StemAgentTests(unittest.TestCase):
                 "hello",
             ],
         )
+
+    def test_streaming_codex_backend_reports_progress_and_usage(self):
+        lines = [
+            '{"type":"thread.started","thread_id":"abc"}\n',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"STOP"}}\n',
+            '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}\n',
+        ]
+        stderr = io.StringIO()
+        progress = SingleLineProgress("architect", stream=stderr, interval=0.01)
+
+        with patch(
+            "stem_agent.backends.subprocess.Popen",
+            return_value=FakePopen(lines),
+        ):
+            result = CodexExecBackend(progress=progress).run("hello")
+
+        self.assertEqual(result.session_id, "abc")
+        self.assertEqual(result.last_text, "STOP")
+        self.assertEqual(result.usage.output_tokens, 3)
+        self.assertIn("[architect] running", stderr.getvalue())
+        self.assertIn("[architect] done", stderr.getvalue())
+        self.assertIn("output=3 total=7", stderr.getvalue())
+
+    def test_streaming_codex_backend_reports_missing_usage(self):
+        lines = [
+            '{"type":"thread.started","thread_id":"abc"}\n',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"STOP"}}\n',
+        ]
+        stderr = io.StringIO()
+        progress = SingleLineProgress("node:work", stream=stderr, interval=0.01)
+
+        with patch(
+            "stem_agent.backends.subprocess.Popen",
+            return_value=FakePopen(lines),
+        ):
+            result = CodexExecBackend(progress=progress).run("hello")
+
+        self.assertFalse(result.saw_usage)
+        self.assertIn("[node:work] done", stderr.getvalue())
+        self.assertIn("usage=missing", stderr.getvalue())
 
     def test_zero_budget_does_not_call_codex(self):
         with patch("stem_agent.backends.CodexExecBackend.run") as backend_run:
@@ -484,10 +577,89 @@ class GraphTests(unittest.TestCase):
 
             with patch("stem_agent.graph_runner.CodexExecBackend", return_value=fake_backend):
                 with patch("sys.stdout", new=io.StringIO()) as stdout:
-                    self.assertEqual(main(["--graph", graph_path, "task"]), 0)
+                    with patch("sys.stderr", new=io.StringIO()):
+                        self.assertEqual(main(["--graph", graph_path, "task"]), 0)
 
             self.assertIn('result={"summary":"ok"}', stdout.getvalue())
             self.assertIn("stop=graph_finished", stdout.getvalue())
+
+    def test_graph_cli_prints_basic_progress_to_stderr(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            write_graph(graph_path, self.valid_graph())
+
+            with patch("stem_agent.graph_runner.CodexExecBackend", ProgressFakeBackend):
+                with patch("sys.stdout", new=io.StringIO()):
+                    with patch("sys.stderr", new=io.StringIO()) as stderr:
+                        self.assertEqual(main(["--graph", graph_path, "task"]), 0)
+
+            self.assertIn("[node:work] running", stderr.getvalue())
+            self.assertIn("[node:work] done", stderr.getvalue())
+
+    def test_graph_subcommand_uses_project_relative_defaults(self):
+        FakeGraphRunner.calls = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("stem_agent.cli.GraphRunner", FakeGraphRunner):
+                with patch("sys.stdout", new=io.StringIO()):
+                    with patch("sys.stderr", new=io.StringIO()):
+                        self.assertEqual(
+                            main(["graph", "--project", tmpdir, "task"]),
+                            0,
+                        )
+
+            args, kwargs = FakeGraphRunner.calls[0]
+            project = Path(tmpdir).resolve()
+            self.assertEqual(args[0], str(project / ".agents" / "graph.json"))
+            self.assertEqual(kwargs["events_log"], str(project / ".agents" / "run.jsonl"))
+            self.assertEqual(kwargs["cd"], str(project))
+            self.assertEqual(kwargs["sandbox"], "workspace-write")
+            self.assertTrue(kwargs["allow_missing_usage"])
+
+    def test_graph_subcommand_resolves_custom_paths_under_project(self):
+        FakeGraphRunner.calls = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("stem_agent.cli.GraphRunner", FakeGraphRunner):
+                with patch("sys.stdout", new=io.StringIO()):
+                    with patch("sys.stderr", new=io.StringIO()):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "graph",
+                                    "--project",
+                                    tmpdir,
+                                    "--graph",
+                                    "custom/graph.json",
+                                    "--events-log",
+                                    "logs/run.jsonl",
+                                    "--cd",
+                                    "workspace",
+                                    "task",
+                                ]
+                            ),
+                            0,
+                        )
+
+            args, kwargs = FakeGraphRunner.calls[0]
+            project = Path(tmpdir).resolve()
+            self.assertEqual(args[0], str(project / "custom" / "graph.json"))
+            self.assertEqual(kwargs["events_log"], str(project / "logs" / "run.jsonl"))
+            self.assertEqual(kwargs["cd"], str(project / "workspace"))
+
+    def test_run_subcommand_keeps_direct_mode(self):
+        with patch("stem_agent.backends.CodexExecBackend.run"):
+            with patch("sys.stdout", new=io.StringIO()) as stdout:
+                self.assertEqual(main(["run", "hello", "--output-budget", "0"]), 0)
+
+        self.assertIn("stop=output_budget_spent", stdout.getvalue())
+
+    def test_pyproject_declares_stem_agent_console_script(self):
+        with open("pyproject.toml", "rb") as handle:
+            pyproject = tomllib.load(handle)
+
+        self.assertEqual(
+            pyproject["project"]["scripts"]["stem-agent"],
+            "stem_agent.cli:main",
+        )
 
 
 @unittest.skipUnless(
