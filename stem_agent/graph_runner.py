@@ -43,6 +43,7 @@ class GraphRunner:
         model: str | None = None,
         cd: str | None = None,
         sandbox: str | None = None,
+        skip_git_repo_check: bool = False,
         allow_missing_usage: bool = False,
         max_steps: int = 20,
         architect_retries: int = 2,
@@ -53,6 +54,7 @@ class GraphRunner:
         self.model = model
         self.cd = cd
         self.sandbox = sandbox
+        self.skip_git_repo_check = skip_git_repo_check
         self.allow_missing_usage = allow_missing_usage
         self.max_steps = max_steps
         self.architect_retries = architect_retries
@@ -196,6 +198,7 @@ class GraphRunner:
             model=settings.model or self.model,
             cd=self.cd,
             sandbox=self.sandbox,
+            skip_git_repo_check=self.skip_git_repo_check,
             progress=SingleLineProgress(label) if self.console_log else None,
         )
 

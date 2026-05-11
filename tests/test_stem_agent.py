@@ -195,6 +195,24 @@ class StemAgentTests(unittest.TestCase):
             ],
         )
 
+    def test_build_fresh_codex_command_can_skip_git_repo_check(self):
+        self.assertEqual(
+            build_codex_command(
+                "hello",
+                cd="/tmp/x",
+                skip_git_repo_check=True,
+            ),
+            [
+                "codex",
+                "exec",
+                "--json",
+                "--cd",
+                "/tmp/x",
+                "--skip-git-repo-check",
+                "hello",
+            ],
+        )
+
     def test_build_resume_codex_command_keeps_options_before_session(self):
         self.assertEqual(
             build_codex_command(
@@ -613,6 +631,7 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(kwargs["events_log"], str(project / ".agents" / "run.jsonl"))
             self.assertEqual(kwargs["cd"], str(project))
             self.assertEqual(kwargs["sandbox"], "workspace-write")
+            self.assertTrue(kwargs["skip_git_repo_check"])
             self.assertTrue(kwargs["allow_missing_usage"])
 
     def test_graph_subcommand_resolves_custom_paths_under_project(self):

@@ -71,6 +71,7 @@ def build_codex_command(
     model: str | None = None,
     cd: str | None = None,
     sandbox: str | None = None,
+    skip_git_repo_check: bool = False,
 ) -> list[str]:
     if session_id:
         command = ["codex", "exec", "resume", "--json"]
@@ -86,5 +87,7 @@ def build_codex_command(
         command += ["--cd", cd]
     if sandbox:
         command += ["--sandbox", sandbox]
+    if skip_git_repo_check:
+        command.append("--skip-git-repo-check")
     command.append(prompt)
     return command

@@ -24,6 +24,7 @@ class CodexExecConfig:
     model: str | None = None
     cd: str | None = None
     sandbox: str | None = None
+    skip_git_repo_check: bool = False
 
 
 class CodexExecBackend:
@@ -33,9 +34,15 @@ class CodexExecBackend:
         model: str | None = None,
         cd: str | None = None,
         sandbox: str | None = None,
+        skip_git_repo_check: bool = False,
         progress: SingleLineProgress | None = None,
     ) -> None:
-        self.config = CodexExecConfig(model=model, cd=cd, sandbox=sandbox)
+        self.config = CodexExecConfig(
+            model=model,
+            cd=cd,
+            sandbox=sandbox,
+            skip_git_repo_check=skip_git_repo_check,
+        )
         self.progress = progress
 
     @classmethod
@@ -44,6 +51,7 @@ class CodexExecBackend:
             model=getattr(args, "model", None),
             cd=getattr(args, "cd", None),
             sandbox=getattr(args, "sandbox", None),
+            skip_git_repo_check=getattr(args, "skip_git_repo_check", False),
         )
 
     def build_codex_command(
@@ -57,6 +65,7 @@ class CodexExecBackend:
             model=self.config.model,
             cd=self.config.cd,
             sandbox=self.config.sandbox,
+            skip_git_repo_check=self.config.skip_git_repo_check,
         )
 
     def run(self, prompt: str, session_id: str | None = None) -> TurnResult:

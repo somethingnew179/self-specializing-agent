@@ -85,6 +85,7 @@ def run_graph_mode(args: argparse.Namespace) -> int:
         model=args.model,
         cd=cd,
         sandbox=args.sandbox,
+        skip_git_repo_check=args.skip_git_repo_check,
         allow_missing_usage=args.allow_missing_usage,
         max_steps=args.graph_max_steps,
         architect_retries=args.architect_retries,
@@ -148,6 +149,7 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model")
     parser.add_argument("--cd")
     parser.add_argument("--sandbox")
+    parser.add_argument("--skip-git-repo-check", action="store_true")
     parser.add_argument(
         "--allow-missing-usage",
         action="store_true",
@@ -164,6 +166,11 @@ def add_graph_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model")
     parser.add_argument("--cd")
     parser.add_argument("--sandbox", default="workspace-write")
+    parser.add_argument(
+        "--skip-git-repo-check",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--graph-max-steps", type=int, default=20)
     parser.add_argument("--architect-retries", type=int, default=2)
     parser.add_argument(
