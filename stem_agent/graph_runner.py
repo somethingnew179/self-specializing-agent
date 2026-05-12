@@ -46,6 +46,7 @@ class GraphRunner:
         skip_git_repo_check: bool = False,
         allow_missing_usage: bool = False,
         max_steps: int = 20,
+        max_nodes: int = 8,
         architect_retries: int = 2,
         console_log: bool = False,
     ) -> None:
@@ -57,6 +58,7 @@ class GraphRunner:
         self.skip_git_repo_check = skip_git_repo_check
         self.allow_missing_usage = allow_missing_usage
         self.max_steps = max_steps
+        self.max_nodes = max_nodes
         self.architect_retries = architect_retries
         self.console_log = console_log
         self.backend_factory = backend_factory
@@ -199,6 +201,7 @@ class GraphRunner:
             cd=self.cd,
             sandbox=self.sandbox,
             skip_git_repo_check=self.skip_git_repo_check,
+            add_dirs=(str(self.graph_path.parent),),
             progress=SingleLineProgress(label) if self.console_log else None,
         )
 
@@ -347,6 +350,7 @@ class GraphRunner:
             context=context,
             issue=issue,
             errors=errors,
+            max_nodes=self.max_nodes,
         )
         self.events.write(
             "architect_called",

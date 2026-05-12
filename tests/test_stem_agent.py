@@ -11,7 +11,16 @@ from stem_agent import RunState, TurnResult, Usage
 from stem_agent.backends import CodexExecBackend
 from stem_agent.cli import main
 from stem_agent.codex_json import build_codex_command, parse_events, parse_usage
-from stem_agent.graph import END_NODE, parse_node_output, validate_graph, write_graph
+from stem_agent.graph import (
+    END_NODE,
+    AgentSettings,
+    bootstrap_graph,
+    build_architect_prompt,
+    build_node_prompt,
+    parse_node_output,
+    validate_graph,
+    write_graph,
+)
 from stem_agent.graph_runner import GraphRunner
 from stem_agent.policies import BudgetPolicy, StopPolicy
 from stem_agent.progress import SingleLineProgress
@@ -208,6 +217,32 @@ class StemAgentTests(unittest.TestCase):
                 "--json",
                 "--cd",
                 "/tmp/x",
+                "--skip-git-repo-check",
+                "hello",
+            ],
+        )
+
+    def test_build_fresh_codex_command_can_add_writable_dirs(self):
+        self.assertEqual(
+            build_codex_command(
+                "hello",
+                cd="/tmp/x",
+                sandbox="workspace-write",
+                add_dirs=("/tmp/x/.agents", "/tmp/other"),
+                skip_git_repo_check=True,
+            ),
+            [
+                "codex",
+                "exec",
+                "--json",
+                "--cd",
+                "/tmp/x",
+                "--sandbox",
+                "workspace-write",
+                "--add-dir",
+                "/tmp/x/.agents",
+                "--add-dir",
+                "/tmp/other",
                 "--skip-git-repo-check",
                 "hello",
             ],
@@ -435,6 +470,54 @@ class GraphTests(unittest.TestCase):
     def test_valid_graph_passes_validation(self):
         self.assertEqual(validate_graph(self.valid_graph()), [])
 
+    def test_bootstrap_graph_has_strict_architect_prompt(self):
+        graph = bootstrap_graph("gpt-test")
+
+        prompt = graph["architect"]["prompt"]
+        self.assertIn("You do not execute the user's task", prompt)
+        self.assertIn("choose the next worker node", prompt)
+
+    def test_architect_prompt_forbids_solving_task_directly(self):
+        prompt = build_architect_prompt(
+            user_task="сделай браузерный тетрис",
+            graph_path=Path("/tmp/project/.agents/graph.json"),
+            graph=self.valid_graph(),
+            architect_prompt="old weak prompt",
+            context=[],
+            issue="bootstrap",
+            errors=[],
+            max_nodes=7,
+        )
+
+        self.assertIn("You do not execute the user's task", prompt)
+        self.assertIn("You may only modify graph_path", prompt)
+        self.assertIn("Do not implement the user's task yourself", prompt)
+        self.assertIn("Do not create or edit product/source files", prompt)
+        self.assertIn("Delegate all implementation", prompt)
+        self.assertIn("Create up to 7 worker nodes", prompt)
+        self.assertNotIn("usually 1-4 nodes", prompt)
+        self.assertIn("Choose graph complexity based on task complexity", prompt)
+        self.assertIn("programmer, designer, researcher, tester", prompt)
+        self.assertIn("frontend_programmer", prompt)
+        self.assertIn("Invent task-specific roles", prompt)
+        self.assertIn('Return only JSON in the form {"next_node":"node_id"}', prompt)
+
+    def test_node_prompt_still_contains_execution_contract(self):
+        graph = self.valid_graph()
+
+        prompt = build_node_prompt(
+            user_task="сделай браузерный тетрис",
+            node_id="work",
+            node=graph["nodes"]["work"],
+            context=[{"node": "inspect", "route": "done", "result": {"summary": "ok"}}],
+        )
+
+        self.assertIn('"user_task":', prompt)
+        self.assertIn('"allowed_routes":', prompt)
+        self.assertIn('"result_schema":', prompt)
+        self.assertIn('"context":', prompt)
+        self.assertIn("Return only one JSON object", prompt)
+
     def test_graph_validation_rejects_unknown_route_target(self):
         graph = self.valid_graph()
         graph["nodes"]["work"]["routes"]["missing"] = "missing"
@@ -585,6 +668,34 @@ class GraphTests(unittest.TestCase):
 
             self.assertEqual(outcome.error, "graph_validation_error")
 
+    def test_graph_runner_adds_agents_dir_to_codex_sandbox(self):
+        graph_path = Path("/tmp/project/.agents/graph.json")
+        runner = GraphRunner(
+            graph_path,
+            cd="/tmp/project",
+            sandbox="workspace-write",
+            skip_git_repo_check=True,
+        )
+
+        backend = runner._default_backend_factory(AgentSettings(), "architect")
+
+        self.assertEqual(
+            backend.build_codex_command("hello"),
+            [
+                "codex",
+                "exec",
+                "--json",
+                "--cd",
+                "/tmp/project",
+                "--sandbox",
+                "workspace-write",
+                "--add-dir",
+                str(graph_path.resolve().parent),
+                "--skip-git-repo-check",
+                "hello",
+            ],
+        )
+
     def test_graph_cli_does_not_require_output_budget(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             graph_path = os.path.join(tmpdir, "graph.json")
@@ -633,6 +744,7 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(kwargs["sandbox"], "workspace-write")
             self.assertTrue(kwargs["skip_git_repo_check"])
             self.assertTrue(kwargs["allow_missing_usage"])
+            self.assertEqual(kwargs["max_nodes"], 8)
 
     def test_graph_subcommand_resolves_custom_paths_under_project(self):
         FakeGraphRunner.calls = []
@@ -652,6 +764,8 @@ class GraphTests(unittest.TestCase):
                                     "logs/run.jsonl",
                                     "--cd",
                                     "workspace",
+                                    "--max-nodes",
+                                    "12",
                                     "task",
                                 ]
                             ),
@@ -663,6 +777,12 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(args[0], str(project / "custom" / "graph.json"))
             self.assertEqual(kwargs["events_log"], str(project / "logs" / "run.jsonl"))
             self.assertEqual(kwargs["cd"], str(project / "workspace"))
+            self.assertEqual(kwargs["max_nodes"], 12)
+
+    def test_graph_subcommand_rejects_zero_max_nodes(self):
+        with patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                main(["graph", "--max-nodes", "0", "task"])
 
     def test_run_subcommand_keeps_direct_mode(self):
         with patch("stem_agent.backends.CodexExecBackend.run"):

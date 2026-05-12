@@ -88,6 +88,7 @@ def run_graph_mode(args: argparse.Namespace) -> int:
         skip_git_repo_check=args.skip_git_repo_check,
         allow_missing_usage=args.allow_missing_usage,
         max_steps=args.graph_max_steps,
+        max_nodes=args.max_nodes,
         architect_retries=args.architect_retries,
         console_log=True,
     )
@@ -121,6 +122,7 @@ def build_legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--graph")
     parser.add_argument("--project", default=".")
     parser.add_argument("--graph-max-steps", type=int, default=20)
+    parser.add_argument("--max-nodes", type=int, default=8)
     parser.add_argument("--architect-retries", type=int, default=2)
     parser.set_defaults(smart_defaults=False)
     return parser
@@ -172,6 +174,7 @@ def add_graph_arguments(parser: argparse.ArgumentParser) -> None:
         default=True,
     )
     parser.add_argument("--graph-max-steps", type=int, default=20)
+    parser.add_argument("--max-nodes", type=int, default=8)
     parser.add_argument("--architect-retries", type=int, default=2)
     parser.add_argument(
         "--allow-missing-usage",
@@ -215,6 +218,8 @@ def validate_run_args(parser: argparse.ArgumentParser, args: argparse.Namespace)
 def validate_graph_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.graph_max_steps < 0:
         parser.error("--graph-max-steps must be >= 0")
+    if args.max_nodes < 1:
+        parser.error("--max-nodes must be >= 1")
     if args.architect_retries < 0:
         parser.error("--architect-retries must be >= 0")
 
