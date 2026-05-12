@@ -54,6 +54,7 @@ class GraphRunner:
         debug_log: str | Path | DebugLog | None = None,
     ) -> None:
         self.graph_path = Path(graph_path).resolve()
+        self.architect_session_path = self.graph_path.parent / "architect_session.json"
         self.events = JsonlEventLog(events_log)
         self.debug_log = debug_log if isinstance(debug_log, DebugLog) else DebugLog(debug_log)
         self.model = model
@@ -66,6 +67,8 @@ class GraphRunner:
         self.architect_retries = architect_retries
         self.console_log = console_log
         self.backend_factory = backend_factory
+        self._architect_session_loaded = False
+        self._architect_session_id: str | None = None
 
     def run(self, user_task: str) -> GraphRunOutcome:
         context: list[dict] = []
@@ -73,6 +76,7 @@ class GraphRunner:
         self.debug_log.write(
             "graph_run_started",
             graph_path=str(self.graph_path),
+            architect_session_path=str(self.architect_session_path),
             user_task=user_task,
             model=self.model,
             cd=self.cd,
@@ -488,6 +492,7 @@ class GraphRunner:
             errors=errors,
             max_nodes=self.max_nodes,
         )
+        architect_session_id = self._load_architect_session_id()
         self.events.write(
             "architect_called",
             issue=issue,
@@ -496,6 +501,7 @@ class GraphRunner:
             effort=settings.effort,
             params=settings.params,
             errors=errors,
+            session_id=architect_session_id,
         )
         self.debug_log.write(
             "architect_called",
@@ -505,10 +511,14 @@ class GraphRunner:
             effort=settings.effort,
             params=settings.params,
             errors=errors,
+            session_id=architect_session_id,
             prompt=prompt,
         )
         try:
-            turn = self._backend_for(settings, "architect").run(prompt)
+            turn = self._backend_for(settings, "architect").run(
+                prompt,
+                architect_session_id,
+            )
         except RuntimeError as error:
             self.events.write("architect_failed", attempt=attempt, error=str(error))
             self.debug_log.write(
@@ -517,6 +527,8 @@ class GraphRunner:
                 error=str(error),
             )
             return "", graph, Usage(), str(error)
+
+        self._save_architect_session_id(turn.session_id or architect_session_id)
 
         missing_usage = self._missing_usage_error(turn)
         if missing_usage:
@@ -583,3 +595,61 @@ class GraphRunner:
         if turn.saw_usage or self.allow_missing_usage:
             return None
         return "missing_token_usage"
+
+    def _load_architect_session_id(self) -> str | None:
+        if self._architect_session_loaded:
+            return self._architect_session_id
+        self._architect_session_loaded = True
+        try:
+            with self.architect_session_path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+        except FileNotFoundError:
+            self.debug_log.write(
+                "architect_session_missing",
+                path=str(self.architect_session_path),
+            )
+            return None
+        except (OSError, ValueError) as error:
+            self.debug_log.write(
+                "architect_session_load_failed",
+                path=str(self.architect_session_path),
+                error=str(error),
+            )
+            return None
+
+        session_id = value.get("session_id") if isinstance(value, dict) else None
+        if not isinstance(session_id, str) or not session_id.strip():
+            self.debug_log.write(
+                "architect_session_load_failed",
+                path=str(self.architect_session_path),
+                error="missing session_id",
+            )
+            return None
+        self._architect_session_id = session_id.strip()
+        self.debug_log.write(
+            "architect_session_loaded",
+            path=str(self.architect_session_path),
+            session_id=self._architect_session_id,
+        )
+        return self._architect_session_id
+
+    def _save_architect_session_id(self, session_id: str | None) -> None:
+        if not session_id:
+            return
+        session_id = session_id.strip()
+        if not session_id:
+            return
+        if session_id == self._architect_session_id and self.architect_session_path.exists():
+            return
+
+        self.architect_session_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.architect_session_path.open("w", encoding="utf-8") as handle:
+            json.dump({"session_id": session_id}, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        self._architect_session_loaded = True
+        self._architect_session_id = session_id
+        self.debug_log.write(
+            "architect_session_saved",
+            path=str(self.architect_session_path),
+            session_id=session_id,
+        )

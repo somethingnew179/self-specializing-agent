@@ -41,9 +41,11 @@ class FakeBackend:
     def __init__(self, actions):
         self.actions = list(actions)
         self.prompts = []
+        self.sessions = []
 
     def run(self, prompt, session_id=None):
         self.prompts.append(prompt)
+        self.sessions.append(session_id)
         if not self.actions:
             raise RuntimeError("no fake backend actions left")
         action = self.actions.pop(0)
@@ -637,6 +639,54 @@ class GraphTests(unittest.TestCase):
             self.assertIn("node_called", [event["type"] for event in events])
             self.assertIn("node_result", [event["type"] for event in events])
             self.assertIn("transition", [event["type"] for event in events])
+
+    def test_graph_runner_resumes_architect_session_across_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            graph = self.valid_graph()
+            graph["start"] = "architect"
+            write_graph(graph_path, graph)
+            first_backend = FakeBackend(
+                [
+                    TurnResult(
+                        "architect-session-1",
+                        '{"next_node":"work"}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
+                    graph_turn('{"route":"done","result":{"summary":"ok"}}'),
+                ]
+            )
+
+            first = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: first_backend,
+                allow_missing_usage=False,
+            ).run("task")
+
+            self.assertEqual(first.stop_reason, "graph_finished")
+            session_path = Path(tmpdir) / "architect_session.json"
+            with session_path.open(encoding="utf-8") as handle:
+                self.assertEqual(
+                    json.load(handle),
+                    {"session_id": "architect-session-1"},
+                )
+
+            second_backend = FakeBackend(
+                [
+                    graph_turn('{"next_node":"work"}'),
+                    graph_turn('{"route":"done","result":{"summary":"again"}}'),
+                ]
+            )
+
+            second = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: second_backend,
+                allow_missing_usage=False,
+            ).run("task")
+
+            self.assertEqual(second.stop_reason, "graph_finished")
+            self.assertEqual(second_backend.sessions, ["architect-session-1", None])
 
     def test_graph_runner_calls_architect_on_invalid_node_output(self):
         graph = self.valid_graph()

@@ -47,12 +47,15 @@ def format_human_event(event_type: str, fields: dict[str, Any]) -> str | None:
         errors = fields.get("errors") or []
         return f"[graph] validation failed: {len(errors)} error(s)"
     if event_type == "architect_called":
+        session = fields.get("session_id")
+        resume = f" session={session}" if session else ""
         return (
             "[agent] architect start"
             f" issue={fields.get('issue', '-')}"
             f" attempt={fields.get('attempt', 0)}"
             f" model={fields.get('model') or '-'}"
             f" effort={fields.get('effort') or '-'}"
+            f"{resume}"
         )
     if event_type == "architect_finished":
         return f"[agent] architect done next={fields.get('next_node', '-')}"
