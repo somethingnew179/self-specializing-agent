@@ -252,6 +252,25 @@ class StemAgentTests(unittest.TestCase):
             ],
         )
 
+    def test_build_fresh_codex_command_can_enable_auto_review(self):
+        self.assertEqual(
+            build_codex_command(
+                "hello",
+                cd="/tmp/x",
+                auto_review=True,
+            ),
+            [
+                "codex",
+                "exec",
+                "--json",
+                "-c",
+                'approvals_reviewer="auto_review"',
+                "--cd",
+                "/tmp/x",
+                "hello",
+            ],
+        )
+
     def test_build_resume_codex_command_keeps_options_before_session(self):
         self.assertEqual(
             build_codex_command(
@@ -268,6 +287,33 @@ class StemAgentTests(unittest.TestCase):
                 "exec",
                 "resume",
                 "--json",
+                "-c",
+                'default_permissions="stem-agent-write"',
+                "--model",
+                "gpt-5.2",
+                "--skip-git-repo-check",
+                "session-1",
+                "hello",
+            ],
+        )
+
+    def test_build_resume_codex_command_can_enable_auto_review(self):
+        self.assertEqual(
+            build_codex_command(
+                "hello",
+                "session-1",
+                model="gpt-5.2",
+                auto_review=True,
+                config_overrides=('default_permissions="stem-agent-write"',),
+                skip_git_repo_check=True,
+            ),
+            [
+                "codex",
+                "exec",
+                "resume",
+                "--json",
+                "-c",
+                'approvals_reviewer="auto_review"',
                 "-c",
                 'default_permissions="stem-agent-write"',
                 "--model",
@@ -426,6 +472,38 @@ class StemAgentTests(unittest.TestCase):
                 self.assertEqual(main(["hello", "--output-budget", "0"]), 0)
 
         self.assertIn("stop=output_budget_spent", stdout.getvalue())
+
+    def test_run_subcommand_passes_auto_review_to_backend(self):
+        backend = FakeBackend([graph_turn("STOP")])
+
+        with patch(
+            "stem_agent.cli.CodexExecBackend.from_args",
+            return_value=backend,
+        ) as from_args:
+            with patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(
+                    main(["run", "--auto-review", "--output-budget", "10", "STOP"]),
+                    0,
+                )
+
+        args = from_args.call_args.args[0]
+        self.assertTrue(args.auto_review)
+
+    def test_legacy_run_mode_passes_auto_review_to_backend(self):
+        backend = FakeBackend([graph_turn("STOP")])
+
+        with patch(
+            "stem_agent.cli.CodexExecBackend.from_args",
+            return_value=backend,
+        ) as from_args:
+            with patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(
+                    main(["--auto-review", "--output-budget", "10", "STOP"]),
+                    0,
+                )
+
+        args = from_args.call_args.args[0]
+        self.assertTrue(args.auto_review)
 
     def test_total_budget_stop_is_reported(self):
         result = TurnResult(
@@ -864,6 +942,23 @@ class GraphTests(unittest.TestCase):
             ],
         )
 
+    def test_graph_runner_can_enable_auto_review(self):
+        project = Path("/tmp/project").resolve()
+        graph_path = project / ".agents" / "graph.json"
+        runner = GraphRunner(
+            graph_path,
+            cd=str(project),
+            skip_git_repo_check=True,
+            auto_review=True,
+        )
+
+        backend = runner._default_backend_factory(AgentSettings(), "architect")
+
+        command = backend.build_codex_command("hello", "session-1")
+        self.assertIn("-c", command)
+        self.assertIn('approvals_reviewer="auto_review"', command)
+        self.assertIn("--skip-git-repo-check", command)
+
     def test_graph_cli_does_not_require_output_budget(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             graph_path = os.path.join(tmpdir, "graph.json")
@@ -913,6 +1008,44 @@ class GraphTests(unittest.TestCase):
             self.assertTrue(kwargs["skip_git_repo_check"])
             self.assertTrue(kwargs["allow_missing_usage"])
             self.assertEqual(kwargs["max_nodes"], 8)
+            self.assertFalse(kwargs["auto_review"])
+
+    def test_graph_subcommand_can_enable_auto_review(self):
+        FakeGraphRunner.calls = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("stem_agent.cli.GraphRunner", FakeGraphRunner):
+                with patch("sys.stdout", new=io.StringIO()):
+                    with patch("sys.stderr", new=io.StringIO()):
+                        self.assertEqual(
+                            main(["graph", "--project", tmpdir, "--auto-review", "task"]),
+                            0,
+                        )
+
+            _, kwargs = FakeGraphRunner.calls[0]
+            self.assertTrue(kwargs["auto_review"])
+
+    def test_legacy_graph_mode_can_enable_auto_review(self):
+        FakeGraphRunner.calls = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("stem_agent.cli.GraphRunner", FakeGraphRunner):
+                with patch("sys.stdout", new=io.StringIO()):
+                    with patch("sys.stderr", new=io.StringIO()):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "--project",
+                                    tmpdir,
+                                    "--graph",
+                                    ".agents/graph.json",
+                                    "--auto-review",
+                                    "task",
+                                ]
+                            ),
+                            0,
+                        )
+
+            _, kwargs = FakeGraphRunner.calls[0]
+            self.assertTrue(kwargs["auto_review"])
 
     def test_graph_subcommand_resolves_custom_paths_under_project(self):
         FakeGraphRunner.calls = []

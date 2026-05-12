@@ -5,6 +5,8 @@ from typing import Any
 
 from .models import TurnResult, Usage
 
+AUTO_REVIEW_CONFIG_OVERRIDE = 'approvals_reviewer="auto_review"'
+
 
 def parse_usage(value: dict[str, Any] | None) -> Usage:
     return Usage.from_dict(value)
@@ -72,8 +74,10 @@ def build_codex_command(
     cd: str | None = None,
     sandbox: str | None = None,
     skip_git_repo_check: bool = False,
+    auto_review: bool = False,
     config_overrides: list[str] | tuple[str, ...] = (),
 ) -> list[str]:
+    config_overrides = _effective_config_overrides(config_overrides, auto_review)
     if session_id:
         command = ["codex", "exec", "resume", "--json"]
         for override in config_overrides:
@@ -98,3 +102,13 @@ def build_codex_command(
         command.append("--skip-git-repo-check")
     command.append(prompt)
     return command
+
+
+def _effective_config_overrides(
+    config_overrides: list[str] | tuple[str, ...],
+    auto_review: bool,
+) -> tuple[str, ...]:
+    overrides = tuple(config_overrides)
+    if not auto_review or AUTO_REVIEW_CONFIG_OVERRIDE in overrides:
+        return overrides
+    return (AUTO_REVIEW_CONFIG_OVERRIDE, *overrides)

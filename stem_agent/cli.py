@@ -127,6 +127,7 @@ def run_graph_mode(args: argparse.Namespace) -> int:
         architect_retries=args.architect_retries,
         console_log=True,
         debug_log=debug_log,
+        auto_review=args.auto_review,
     )
     outcome = runner.run(prompt)
     debug_log.write(
@@ -197,6 +198,11 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sandbox")
     parser.add_argument("--skip-git-repo-check", action="store_true")
     parser.add_argument(
+        "--auto-review",
+        action="store_true",
+        help="Use Codex auto-review approval mode for generated commands",
+    )
+    parser.add_argument(
         "--allow-missing-usage",
         action="store_true",
         help="Continue with zero token usage if codex does not emit usage",
@@ -214,6 +220,11 @@ def add_graph_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model")
     parser.add_argument("--cd")
     parser.add_argument("--sandbox", default="workspace-write")
+    parser.add_argument(
+        "--auto-review",
+        action="store_true",
+        help="Use Codex auto-review approval mode for generated commands",
+    )
     parser.add_argument(
         "--skip-git-repo-check",
         action=argparse.BooleanOptionalAction,

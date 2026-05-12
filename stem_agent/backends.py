@@ -26,6 +26,7 @@ class CodexExecConfig:
     cd: str | None = None
     sandbox: str | None = None
     skip_git_repo_check: bool = False
+    auto_review: bool = False
     config_overrides: tuple[str, ...] = ()
 
 
@@ -37,6 +38,7 @@ class CodexExecBackend:
         cd: str | None = None,
         sandbox: str | None = None,
         skip_git_repo_check: bool = False,
+        auto_review: bool = False,
         config_overrides: list[str] | tuple[str, ...] = (),
         progress: SingleLineProgress | None = None,
         debug_log: DebugLog | None = None,
@@ -47,6 +49,7 @@ class CodexExecBackend:
             cd=cd,
             sandbox=sandbox,
             skip_git_repo_check=skip_git_repo_check,
+            auto_review=auto_review,
             config_overrides=tuple(config_overrides),
         )
         self.progress = progress
@@ -66,6 +69,7 @@ class CodexExecBackend:
             cd=getattr(args, "cd", None),
             sandbox=getattr(args, "sandbox", None),
             skip_git_repo_check=getattr(args, "skip_git_repo_check", False),
+            auto_review=getattr(args, "auto_review", False),
             debug_log=debug_log,
             debug_label=debug_label,
         )
@@ -82,6 +86,7 @@ class CodexExecBackend:
             cd=self.config.cd,
             sandbox=self.config.sandbox,
             skip_git_repo_check=self.config.skip_git_repo_check,
+            auto_review=self.config.auto_review,
             config_overrides=self.config.config_overrides,
         )
 

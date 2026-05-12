@@ -52,6 +52,7 @@ class GraphRunner:
         architect_retries: int = 2,
         console_log: bool = False,
         debug_log: str | Path | DebugLog | None = None,
+        auto_review: bool = False,
     ) -> None:
         self.graph_path = Path(graph_path).resolve()
         self.architect_session_path = self.graph_path.parent / "architect_session.json"
@@ -67,6 +68,7 @@ class GraphRunner:
         self.architect_retries = architect_retries
         self.console_log = console_log
         self.backend_factory = backend_factory
+        self.auto_review = auto_review
         self._architect_session_loaded = False
         self._architect_session_id: str | None = None
 
@@ -82,6 +84,7 @@ class GraphRunner:
             cd=self.cd,
             sandbox=self.sandbox,
             skip_git_repo_check=self.skip_git_repo_check,
+            auto_review=self.auto_review,
             allow_missing_usage=self.allow_missing_usage,
             max_steps=self.max_steps,
             max_nodes=self.max_nodes,
@@ -263,6 +266,7 @@ class GraphRunner:
             model=settings.model or self.model,
             cd=self.cd,
             skip_git_repo_check=self.skip_git_repo_check,
+            auto_review=self.auto_review,
             config_overrides=self._codex_permission_overrides(),
             progress=SingleLineProgress(label) if self.console_log else None,
             debug_log=self.debug_log,
