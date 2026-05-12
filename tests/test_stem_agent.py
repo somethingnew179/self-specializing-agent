@@ -11,6 +11,7 @@ from stem_agent import RunState, TurnResult, Usage
 from stem_agent.backends import CodexExecBackend
 from stem_agent.cli import main
 from stem_agent.codex_json import build_codex_command, parse_events, parse_usage
+from stem_agent.debug_log import DebugLog
 from stem_agent.graph import (
     END_NODE,
     AgentSettings,
@@ -309,6 +310,44 @@ class StemAgentTests(unittest.TestCase):
         self.assertFalse(result.saw_usage)
         self.assertIn("[node:work] done", stderr.getvalue())
         self.assertIn("usage=missing", stderr.getvalue())
+
+    def test_streaming_codex_backend_writes_debug_log(self):
+        lines = [
+            '{"type":"thread.started","thread_id":"abc"}\n',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"STOP"}}\n',
+            '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}\n',
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            debug_path = os.path.join(tmpdir, "debug.jsonl")
+            progress = SingleLineProgress(
+                "architect",
+                stream=io.StringIO(),
+                interval=0.01,
+            )
+
+            with patch(
+                "stem_agent.backends.subprocess.Popen",
+                return_value=FakePopen(lines, stderr="warn"),
+            ):
+                result = CodexExecBackend(
+                    progress=progress,
+                    debug_log=DebugLog(debug_path),
+                    debug_label="architect",
+                ).run("hello")
+
+            self.assertEqual(result.last_text, "STOP")
+            with open(debug_path, encoding="utf-8") as handle:
+                events = [json.loads(line) for line in handle]
+
+        self.assertEqual(events[0]["type"], "codex_exec_started")
+        self.assertEqual(events[0]["label"], "architect")
+        self.assertEqual(events[0]["prompt"], "hello")
+        self.assertIn("codex_stdout_line", [event["type"] for event in events])
+        self.assertIn("codex_event", [event["type"] for event in events])
+        self.assertIn("codex_result_parsed", [event["type"] for event in events])
+        self.assertEqual(events[-2]["stderr"], "warn")
+        self.assertEqual(events[-1]["usage"]["total_tokens"], 7)
 
     def test_zero_budget_does_not_call_codex(self):
         with patch("stem_agent.backends.CodexExecBackend.run") as backend_run:
@@ -827,6 +866,39 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(kwargs["events_log"], str(project / "logs" / "run.jsonl"))
             self.assertEqual(kwargs["cd"], str(project / "workspace"))
             self.assertEqual(kwargs["max_nodes"], 12)
+
+    def test_graph_subcommand_resolves_debug_log_under_project(self):
+        FakeGraphRunner.calls = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("stem_agent.cli.GraphRunner", FakeGraphRunner):
+                with patch("sys.stdout", new=io.StringIO()):
+                    with patch("sys.stderr", new=io.StringIO()):
+                        self.assertEqual(
+                            main(
+                                [
+                                    "graph",
+                                    "--project",
+                                    tmpdir,
+                                    "--debug-log",
+                                    "logs/debug.jsonl",
+                                    "task",
+                                ]
+                            ),
+                            0,
+                        )
+
+            _, kwargs = FakeGraphRunner.calls[0]
+            project = Path(tmpdir).resolve()
+            self.assertEqual(
+                kwargs["debug_log"].path,
+                project / "logs" / "debug.jsonl",
+            )
+            with open(project / "logs" / "debug.jsonl", encoding="utf-8") as handle:
+                events = [json.loads(line) for line in handle]
+
+        self.assertEqual(events[0]["type"], "cli_invocation")
+        self.assertEqual(events[0]["mode"], "graph")
+        self.assertEqual(events[-1]["type"], "cli_finished")
 
     def test_graph_subcommand_rejects_zero_max_nodes(self):
         with patch("sys.stderr", new=io.StringIO()):

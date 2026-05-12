@@ -6,8 +6,9 @@ import sys
 from pathlib import Path
 
 from .backends import CodexExecBackend
+from .debug_log import DebugLog
 from .graph_runner import GraphRunner
-from .models import RunState
+from .models import RunState, Usage
 from .policies import BudgetPolicy
 from .runner import AgentLoop, TurnSnapshot
 
@@ -43,7 +44,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_direct_mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     output_budget = resolve_output_budget(parser, args)
-    backend = CodexExecBackend.from_args(args)
+    debug_log = DebugLog(args.debug_log)
+    prompt = read_prompt(args.prompt)
+    debug_log.write(
+        "cli_invocation",
+        mode="run",
+        args=vars(args),
+        prompt=prompt,
+    )
+    backend = CodexExecBackend.from_args(args, debug_log=debug_log, debug_label="run")
     loop = AgentLoop(
         backend,
         BudgetPolicy(output_budget, args.total_budget, args.max_turns),
@@ -51,7 +60,15 @@ def run_direct_mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         allow_missing_usage=args.allow_missing_usage,
         events_log=args.events_log,
     )
-    outcome = loop.run(read_prompt(args.prompt))
+    outcome = loop.run(prompt)
+    debug_log.write(
+        "cli_finished",
+        mode="run",
+        error=outcome.error,
+        stop_reason=outcome.stop_reason,
+        snapshots=len(outcome.snapshots),
+        warnings=outcome.warnings,
+    )
 
     for warning in outcome.warnings:
         print(f"warning={warning}", file=sys.stderr)
@@ -78,6 +95,24 @@ def run_graph_mode(args: argparse.Namespace) -> int:
     elif smart_defaults:
         events_log = resolve_project_path(project, ".agents/run.jsonl")
     cd = resolve_project_path(project, args.cd) if args.cd else str(project)
+    debug_log_path = (
+        resolve_project_path(project, args.debug_log)
+        if getattr(args, "debug_log", None)
+        else None
+    )
+    debug_log = DebugLog(debug_log_path)
+    prompt = read_prompt(args.prompt)
+    debug_log.write(
+        "cli_invocation",
+        mode="graph",
+        project=str(project),
+        args=vars(args),
+        prompt=prompt,
+        graph_path=graph_path,
+        events_log=events_log,
+        debug_log=debug_log_path,
+        cd=cd,
+    )
 
     runner = GraphRunner(
         graph_path,
@@ -91,8 +126,17 @@ def run_graph_mode(args: argparse.Namespace) -> int:
         max_nodes=args.max_nodes,
         architect_retries=args.architect_retries,
         console_log=True,
+        debug_log=debug_log,
     )
-    outcome = runner.run(read_prompt(args.prompt))
+    outcome = runner.run(prompt)
+    debug_log.write(
+        "cli_finished",
+        mode="graph",
+        error=outcome.error,
+        stop_reason=outcome.stop_reason,
+        steps=len(outcome.context),
+        usage=getattr(outcome, "usage", Usage()).__dict__,
+    )
 
     if outcome.error:
         print(f"error={outcome.error}", file=sys.stderr)
@@ -158,6 +202,7 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
         help="Continue with zero token usage if codex does not emit usage",
     )
     parser.add_argument("--events-log")
+    parser.add_argument("--debug-log", help="Write a verbose JSONL debug trace")
 
 
 def add_graph_arguments(parser: argparse.ArgumentParser) -> None:
@@ -165,6 +210,7 @@ def add_graph_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", default=".")
     parser.add_argument("--graph")
     parser.add_argument("--events-log")
+    parser.add_argument("--debug-log", help="Write a verbose JSONL debug trace")
     parser.add_argument("--model")
     parser.add_argument("--cd")
     parser.add_argument("--sandbox", default="workspace-write")

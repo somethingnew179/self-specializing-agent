@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from .backends import Backend, CodexExecBackend
+from .debug_log import DebugLog
 from .event_log import JsonlEventLog
 from .graph import (
     ARCHITECT_NODE,
@@ -50,9 +51,11 @@ class GraphRunner:
         max_nodes: int = 8,
         architect_retries: int = 2,
         console_log: bool = False,
+        debug_log: str | Path | DebugLog | None = None,
     ) -> None:
         self.graph_path = Path(graph_path).resolve()
         self.events = JsonlEventLog(events_log)
+        self.debug_log = debug_log if isinstance(debug_log, DebugLog) else DebugLog(debug_log)
         self.model = model
         self.cd = cd
         self.sandbox = sandbox
@@ -67,9 +70,23 @@ class GraphRunner:
     def run(self, user_task: str) -> GraphRunOutcome:
         context: list[dict] = []
         usage = Usage()
+        self.debug_log.write(
+            "graph_run_started",
+            graph_path=str(self.graph_path),
+            user_task=user_task,
+            model=self.model,
+            cd=self.cd,
+            sandbox=self.sandbox,
+            skip_git_repo_check=self.skip_git_repo_check,
+            allow_missing_usage=self.allow_missing_usage,
+            max_steps=self.max_steps,
+            max_nodes=self.max_nodes,
+            architect_retries=self.architect_retries,
+        )
         graph_created = ensure_graph_file(self.graph_path, model=self.model)
         if graph_created:
             self.events.write("graph_created", graph_path=str(self.graph_path))
+            self.debug_log.write("graph_created", graph_path=str(self.graph_path))
 
         graph, errors = self._load_and_validate_graph()
         if errors:
@@ -82,7 +99,7 @@ class GraphRunner:
             )
             usage = usage + architect_usage
             if error:
-                return GraphRunOutcome(error=error, context=context, usage=usage)
+                return self._finish(error=error, context=context, usage=usage)
             current = next_node
         else:
             current = graph.get("start", "architect")
@@ -97,17 +114,27 @@ class GraphRunner:
             )
             usage = usage + architect_usage
             if error:
-                return GraphRunOutcome(error=error, context=context, usage=usage)
+                return self._finish(error=error, context=context, usage=usage)
             current = next_node
 
         steps = 0
         while True:
             if current == END_NODE:
                 self.events.write("run_finished", stop_reason="graph_finished", steps=steps)
-                return GraphRunOutcome("graph_finished", context=context, usage=usage)
+                return self._finish(
+                    stop_reason="graph_finished",
+                    context=context,
+                    usage=usage,
+                    steps=steps,
+                )
             if steps >= self.max_steps:
                 self.events.write("run_finished", stop_reason="max_steps_spent", steps=steps)
-                return GraphRunOutcome("max_steps_spent", context=context, usage=usage)
+                return self._finish(
+                    stop_reason="max_steps_spent",
+                    context=context,
+                    usage=usage,
+                    steps=steps,
+                )
             if current in {"architect", ARCHITECT_NODE}:
                 next_node, graph, architect_usage, error = self._call_architect_until_valid(
                     user_task,
@@ -118,7 +145,7 @@ class GraphRunner:
                 )
                 usage = usage + architect_usage
                 if error:
-                    return GraphRunOutcome(error=error, context=context, usage=usage)
+                    return self._finish(error=error, context=context, usage=usage)
                 current = next_node
                 continue
 
@@ -133,7 +160,7 @@ class GraphRunner:
                 )
                 usage = usage + architect_usage
                 if error:
-                    return GraphRunOutcome(error=error, context=context, usage=usage)
+                    return self._finish(error=error, context=context, usage=usage)
                 current = next_node
                 continue
 
@@ -149,7 +176,7 @@ class GraphRunner:
                 )
                 usage = usage + architect_usage
                 if error:
-                    return GraphRunOutcome(error=error, context=context, usage=usage)
+                    return self._finish(error=error, context=context, usage=usage)
                 current = next_node
                 continue
 
@@ -165,7 +192,7 @@ class GraphRunner:
                 )
                 usage = usage + architect_usage
                 if architect_error:
-                    return GraphRunOutcome(error=architect_error, context=context, usage=usage)
+                    return self._finish(error=architect_error, context=context, usage=usage)
                 current = next_node
                 continue
 
@@ -184,8 +211,39 @@ class GraphRunner:
                 route=result["route"],
                 next_node=target,
             )
+            self.debug_log.write(
+                "transition",
+                node=current,
+                route=result["route"],
+                next_node=target,
+                result=result["result"],
+            )
             current = target
             steps += 1
+
+    def _finish(
+        self,
+        *,
+        stop_reason: str | None = None,
+        error: str | None = None,
+        context: list[dict],
+        usage: Usage,
+        steps: int | None = None,
+    ) -> GraphRunOutcome:
+        self.debug_log.write(
+            "graph_run_finished",
+            stop_reason=stop_reason,
+            error=error,
+            steps=steps,
+            usage=usage.__dict__,
+            context=context,
+        )
+        return GraphRunOutcome(
+            stop_reason=stop_reason,
+            error=error,
+            context=context,
+            usage=usage,
+        )
 
     def _backend_for(self, settings: AgentSettings, label: str) -> Backend:
         if self.backend_factory is not None:
@@ -203,6 +261,8 @@ class GraphRunner:
             skip_git_repo_check=self.skip_git_repo_check,
             config_overrides=self._codex_permission_overrides(),
             progress=SingleLineProgress(label) if self.console_log else None,
+            debug_log=self.debug_log,
+            debug_label=label or "codex",
         )
 
     def _codex_permission_overrides(self) -> tuple[str, str]:
@@ -230,8 +290,19 @@ class GraphRunner:
         try:
             graph = load_graph(self.graph_path)
         except (OSError, ValueError) as error:
+            self.debug_log.write(
+                "graph_load_failed",
+                graph_path=str(self.graph_path),
+                error=str(error),
+            )
             return {}, [str(error)]
         errors = validate_graph(graph)
+        self.debug_log.write(
+            "graph_loaded",
+            graph_path=str(self.graph_path),
+            graph=graph,
+            errors=errors,
+        )
         if errors:
             self.events.write(
                 "graph_validation_failed",
@@ -262,15 +333,31 @@ class GraphRunner:
             params=settings.params,
             routes=sorted(node["routes"].keys()),
         )
+        self.debug_log.write(
+            "node_called",
+            node=node_id,
+            model=settings.model or self.model,
+            effort=settings.effort,
+            params=settings.params,
+            routes=sorted(node["routes"].keys()),
+            prompt=prompt,
+        )
         try:
             turn = self._backend_for(settings, f"node:{node_id}").run(prompt)
         except RuntimeError as error:
             self.events.write("node_failed", node=node_id, error=str(error))
+            self.debug_log.write("node_failed", node=node_id, error=str(error))
             return None, Usage(), str(error)
 
         missing_usage = self._missing_usage_error(turn)
         if missing_usage:
             self.events.write("node_failed", node=node_id, error=missing_usage)
+            self.debug_log.write(
+                "node_failed",
+                node=node_id,
+                error=missing_usage,
+                usage=turn.usage.__dict__,
+            )
             return None, turn.usage, missing_usage
 
         parsed, errors = parse_node_output(turn.last_text, node["result_schema"])
@@ -282,11 +369,25 @@ class GraphRunner:
                 raw_text=turn.last_text,
                 usage=turn.usage.__dict__,
             )
+            self.debug_log.write(
+                "node_result_invalid",
+                node=node_id,
+                errors=errors,
+                raw_text=turn.last_text,
+                usage=turn.usage.__dict__,
+            )
             return None, turn.usage, "; ".join(errors)
 
         if parsed.route not in node["routes"]:
             error = f"unknown route {parsed.route!r}"
             self.events.write("node_result_invalid", node=node_id, errors=[error])
+            self.debug_log.write(
+                "node_result_invalid",
+                node=node_id,
+                errors=[error],
+                raw_text=turn.last_text,
+                usage=turn.usage.__dict__,
+            )
             return None, turn.usage, error
 
         result = {"route": parsed.route, "result": parsed.result}
@@ -296,6 +397,14 @@ class GraphRunner:
             route=parsed.route,
             result=parsed.result,
             usage=turn.usage.__dict__,
+        )
+        self.debug_log.write(
+            "node_result",
+            node=node_id,
+            route=parsed.route,
+            result=parsed.result,
+            usage=turn.usage.__dict__,
+            raw_text=turn.last_text,
         )
         return result, turn.usage, None
 
@@ -384,15 +493,36 @@ class GraphRunner:
             params=settings.params,
             errors=errors,
         )
+        self.debug_log.write(
+            "architect_called",
+            issue=issue,
+            attempt=attempt,
+            model=settings.model or self.model,
+            effort=settings.effort,
+            params=settings.params,
+            errors=errors,
+            prompt=prompt,
+        )
         try:
             turn = self._backend_for(settings, "architect").run(prompt)
         except RuntimeError as error:
             self.events.write("architect_failed", attempt=attempt, error=str(error))
+            self.debug_log.write(
+                "architect_failed",
+                attempt=attempt,
+                error=str(error),
+            )
             return "", graph, Usage(), str(error)
 
         missing_usage = self._missing_usage_error(turn)
         if missing_usage:
             self.events.write("architect_failed", attempt=attempt, error=missing_usage)
+            self.debug_log.write(
+                "architect_failed",
+                attempt=attempt,
+                error=missing_usage,
+                usage=turn.usage.__dict__,
+            )
             return "", graph, turn.usage, missing_usage
 
         next_node, bug_report, output_errors = parse_architect_output(turn.last_text)
@@ -404,10 +534,24 @@ class GraphRunner:
                 bug_report=bug_report,
                 usage=turn.usage.__dict__,
             )
+            self.debug_log.write(
+                "architect_bug_report",
+                attempt=attempt,
+                bug_report=bug_report,
+                usage=turn.usage.__dict__,
+                raw_text=turn.last_text,
+            )
             return "", graph, turn.usage, error
 
         if output_errors or next_node is None:
             self.events.write(
+                "architect_failed",
+                attempt=attempt,
+                errors=output_errors,
+                raw_text=turn.last_text,
+                usage=turn.usage.__dict__,
+            )
+            self.debug_log.write(
                 "architect_failed",
                 attempt=attempt,
                 errors=output_errors,
@@ -421,6 +565,13 @@ class GraphRunner:
             attempt=attempt,
             next_node=next_node,
             usage=turn.usage.__dict__,
+        )
+        self.debug_log.write(
+            "architect_finished",
+            attempt=attempt,
+            next_node=next_node,
+            usage=turn.usage.__dict__,
+            raw_text=turn.last_text,
         )
         return next_node, graph, turn.usage, None
 
