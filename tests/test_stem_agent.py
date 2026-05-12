@@ -260,14 +260,19 @@ class StemAgentTests(unittest.TestCase):
                 model="gpt-5.2",
                 cd="/tmp/x",
                 sandbox="read-only",
+                config_overrides=('default_permissions="stem-agent-write"',),
+                skip_git_repo_check=True,
             ),
             [
                 "codex",
                 "exec",
                 "resume",
                 "--json",
+                "-c",
+                'default_permissions="stem-agent-write"',
                 "--model",
                 "gpt-5.2",
+                "--skip-git-repo-check",
                 "session-1",
                 "hello",
             ],
@@ -312,6 +317,27 @@ class StemAgentTests(unittest.TestCase):
         self.assertFalse(result.saw_usage)
         self.assertIn("[node:work] done", stderr.getvalue())
         self.assertIn("usage=missing", stderr.getvalue())
+
+    def test_streaming_codex_backend_runs_from_configured_cd(self):
+        lines = [
+            '{"type":"thread.started","thread_id":"abc"}\n',
+            '{"type":"item.completed","item":{"type":"agent_message","text":"STOP"}}\n',
+        ]
+        progress = SingleLineProgress("architect", stream=io.StringIO(), interval=0.01)
+
+        with patch(
+            "stem_agent.backends.subprocess.Popen",
+            return_value=FakePopen(lines),
+        ) as popen:
+            result = CodexExecBackend(
+                cd="/tmp/x",
+                skip_git_repo_check=True,
+                progress=progress,
+            ).run("hello", "session-1")
+
+        self.assertEqual(result.session_id, "abc")
+        self.assertEqual(popen.call_args.kwargs["cwd"], "/tmp/x")
+        self.assertIn("--skip-git-repo-check", popen.call_args.args[0])
 
     def test_streaming_codex_backend_writes_debug_log(self):
         lines = [

@@ -76,8 +76,12 @@ def build_codex_command(
 ) -> list[str]:
     if session_id:
         command = ["codex", "exec", "resume", "--json"]
+        for override in config_overrides:
+            command += ["-c", override]
         if model:
             command += ["--model", model]
+        if skip_git_repo_check:
+            command.append("--skip-git-repo-check")
         command += [session_id, prompt]
         return command
 

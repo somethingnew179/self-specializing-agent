@@ -103,6 +103,7 @@ class CodexExecBackend:
             capture_output=True,
             check=False,
             input="",
+            cwd=self.config.cd,
         )
         self._write_debug(
             "codex_exec_completed",
@@ -141,6 +142,7 @@ class CodexExecBackend:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            cwd=self.config.cd,
         )
         self._write_debug("codex_process_started", pid=getattr(process, "pid", None))
         accumulator = CodexEventAccumulator()
