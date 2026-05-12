@@ -773,6 +773,10 @@ class GraphTests(unittest.TestCase):
                 "-c",
                 (
                     'permissions.stem-agent-write={filesystem={'
+                    '":root"="read",'
+                    '":project_roots"="write",'
+                    '":tmpdir"="write",'
+                    '"/tmp"="write",'
                     f'{json.dumps(str(project))}="write",'
                     f'{json.dumps(str(graph_path.resolve().parent))}="write"'
                     "}}"

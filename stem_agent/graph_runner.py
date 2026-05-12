@@ -270,6 +270,10 @@ class GraphRunner:
         agents_dir = self.graph_path.parent
         filesystem = ",".join(
             [
+                '":root"="read"',
+                '":project_roots"="write"',
+                '":tmpdir"="write"',
+                '"/tmp"="write"',
                 f"{json.dumps(str(project_root))}=\"write\"",
                 f"{json.dumps(str(agents_dir))}=\"write\"",
             ]
