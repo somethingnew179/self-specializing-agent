@@ -95,6 +95,8 @@ def format_human_event(event_type: str, fields: dict[str, Any]) -> str | None:
             f"[runner] transition {fields.get('node', '-')}"
             f" --{fields.get('route', '-')}--> {fields.get('next_node', '-')}"
         )
+    if event_type == "final_validation_reopened":
+        return f"[runner] final validation routed to {fields.get('next_node', '-')}"
     if event_type == "run_finished":
         return (
             f"[runner] finished {fields.get('stop_reason', '-')}"

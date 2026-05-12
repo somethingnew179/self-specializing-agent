@@ -127,13 +127,33 @@ class GraphRunner:
         steps = 0
         while True:
             if current == END_NODE:
-                self.events.write("run_finished", stop_reason="graph_finished", steps=steps)
-                return self._finish(
-                    stop_reason="graph_finished",
-                    context=context,
-                    usage=usage,
-                    steps=steps,
+                next_node, graph, architect_usage, error = self._call_architect_until_valid(
+                    user_task,
+                    context,
+                    graph,
+                    "final_validation",
+                    [],
                 )
+                usage = usage + architect_usage
+                if error:
+                    return self._finish(error=error, context=context, usage=usage)
+                if next_node == END_NODE:
+                    self.events.write("run_finished", stop_reason="graph_finished", steps=steps)
+                    return self._finish(
+                        stop_reason="graph_finished",
+                        context=context,
+                        usage=usage,
+                        steps=steps,
+                    )
+                self.events.write("final_validation_reopened", next_node=next_node, steps=steps)
+                self.debug_log.write(
+                    "final_validation_reopened",
+                    next_node=next_node,
+                    steps=steps,
+                    context=context,
+                )
+                current = next_node
+                continue
             if steps >= self.max_steps:
                 self.events.write("run_finished", stop_reason="max_steps_spent", steps=steps)
                 return self._finish(

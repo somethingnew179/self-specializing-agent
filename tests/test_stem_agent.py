@@ -37,6 +37,10 @@ def graph_turn(text, output_tokens=1, saw_usage=True):
     )
 
 
+def final_validation_turn():
+    return graph_turn('{"next_node":"__end__"}')
+
+
 class FakeBackend:
     def __init__(self, actions):
         self.actions = list(actions)
@@ -75,9 +79,13 @@ class FakePopen:
 class ProgressFakeBackend:
     def __init__(self, *args, **kwargs):
         self.progress = kwargs.get("progress")
+        self.debug_label = kwargs.get("debug_label")
 
     def run(self, prompt, session_id=None):
-        result = graph_turn('{"route":"done","result":{"summary":"ok"}}')
+        if self.debug_label == "architect":
+            result = graph_turn('{"next_node":"__end__"}')
+        else:
+            result = graph_turn('{"route":"done","result":{"summary":"ok"}}')
         if self.progress:
             self.progress.start()
             self.progress.event("thread.started")
@@ -643,6 +651,8 @@ class GraphTests(unittest.TestCase):
         self.assertIn("Create up to 7 worker nodes", prompt)
         self.assertNotIn("usually 1-4 nodes", prompt)
         self.assertIn("Choose graph complexity based on task complexity", prompt)
+        self.assertIn("FINAL VALIDATION MODE", prompt)
+        self.assertIn("When issue is final_validation", prompt)
         self.assertIn("programmer, designer, researcher, tester", prompt)
         self.assertIn("frontend_programmer", prompt)
         self.assertIn("Invent task-specific roles", prompt)
@@ -726,7 +736,10 @@ class GraphTests(unittest.TestCase):
             log_path = os.path.join(tmpdir, "events.jsonl")
             write_graph(graph_path, self.valid_graph())
             backend = FakeBackend(
-                [graph_turn('{"route":"done","result":{"summary":"ok"}}')]
+                [
+                    graph_turn('{"route":"done","result":{"summary":"ok"}}'),
+                    final_validation_turn(),
+                ]
             )
 
             outcome = GraphRunner(
@@ -759,6 +772,12 @@ class GraphTests(unittest.TestCase):
                         True,
                     ),
                     graph_turn('{"route":"done","result":{"summary":"ok"}}'),
+                    TurnResult(
+                        "architect-session-1",
+                        '{"next_node":"__end__"}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
                 ]
             )
 
@@ -778,8 +797,19 @@ class GraphTests(unittest.TestCase):
 
             second_backend = FakeBackend(
                 [
-                    graph_turn('{"next_node":"work"}'),
+                    TurnResult(
+                        "architect-session-1",
+                        '{"next_node":"work"}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
                     graph_turn('{"route":"done","result":{"summary":"again"}}'),
+                    TurnResult(
+                        "architect-session-1",
+                        '{"next_node":"__end__"}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
                 ]
             )
 
@@ -790,7 +820,10 @@ class GraphTests(unittest.TestCase):
             ).run("task")
 
             self.assertEqual(second.stop_reason, "graph_finished")
-            self.assertEqual(second_backend.sessions, ["architect-session-1", None])
+            self.assertEqual(
+                second_backend.sessions,
+                ["architect-session-1", None, "architect-session-1"],
+            )
 
     def test_graph_runner_calls_architect_on_invalid_node_output(self):
         graph = self.valid_graph()
@@ -812,6 +845,7 @@ class GraphTests(unittest.TestCase):
                     graph_turn('{"route":"unknown","result":{"summary":"bad route"}}'),
                     graph_turn('{"next_node":"finish"}'),
                     graph_turn('{"route":"done","result":{"summary":"fixed"}}'),
+                    final_validation_turn(),
                 ]
             )
 
@@ -823,6 +857,44 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(outcome.stop_reason, "graph_finished")
             self.assertEqual(outcome.context[-1]["node"], "finish")
             self.assertTrue(any("node_failed" in prompt for prompt in backend.prompts))
+
+    def test_graph_runner_final_validation_can_continue_graph(self):
+        graph = self.valid_graph()
+        graph["nodes"]["fix"] = {
+            "prompt": "Fix final issue.",
+            "result_schema": {
+                "type": "object",
+                "required": ["summary"],
+                "properties": {"summary": {"type": "string"}},
+            },
+            "routes": {"done": END_NODE},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            log_path = os.path.join(tmpdir, "events.jsonl")
+            write_graph(graph_path, graph)
+            backend = FakeBackend(
+                [
+                    graph_turn('{"route":"done","result":{"summary":"first"}}'),
+                    graph_turn('{"next_node":"fix"}'),
+                    graph_turn('{"route":"done","result":{"summary":"fixed"}}'),
+                    final_validation_turn(),
+                ]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+                events_log=log_path,
+            ).run("task")
+
+            self.assertEqual(outcome.stop_reason, "graph_finished")
+            self.assertEqual([item["node"] for item in outcome.context], ["work", "fix"])
+            self.assertTrue(any("final_validation" in prompt for prompt in backend.prompts))
+            with open(log_path, encoding="utf-8") as handle:
+                events = [json.loads(line) for line in handle]
+            self.assertIn("final_validation_reopened", [event["type"] for event in events])
 
     def test_graph_runner_retries_architect_until_graph_is_valid(self):
         invalid_graph = self.valid_graph()
@@ -842,6 +914,7 @@ class GraphTests(unittest.TestCase):
                     graph_turn('{"next_node":"work"}'),
                     fix_graph,
                     graph_turn('{"route":"done","result":{"summary":"ok"}}'),
+                    final_validation_turn(),
                 ]
             )
 
@@ -964,7 +1037,10 @@ class GraphTests(unittest.TestCase):
             graph_path = os.path.join(tmpdir, "graph.json")
             write_graph(graph_path, self.valid_graph())
             fake_backend = FakeBackend(
-                [graph_turn('{"route":"done","result":{"summary":"ok"}}')]
+                [
+                    graph_turn('{"route":"done","result":{"summary":"ok"}}'),
+                    final_validation_turn(),
+                ]
             )
 
             with patch("stem_agent.graph_runner.CodexExecBackend", return_value=fake_backend):
