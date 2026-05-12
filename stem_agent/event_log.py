@@ -61,6 +61,8 @@ def format_human_event(event_type: str, fields: dict[str, Any]) -> str | None:
         errors = fields.get("errors")
         detail = error or (errors[0] if errors else "-")
         return f"[agent] architect failed: {detail}"
+    if event_type == "architect_bug_report":
+        return f"[agent] architect bug: {fields.get('bug_report', '-')}"
     if event_type == "retry":
         return (
             f"[runner] retry {fields.get('target', '-')}"

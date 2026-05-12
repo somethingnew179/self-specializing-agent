@@ -17,6 +17,7 @@ from stem_agent.graph import (
     bootstrap_graph,
     build_architect_prompt,
     build_node_prompt,
+    parse_architect_output,
     parse_node_output,
     validate_graph,
     write_graph,
@@ -500,7 +501,19 @@ class GraphTests(unittest.TestCase):
         self.assertIn("programmer, designer, researcher, tester", prompt)
         self.assertIn("frontend_programmer", prompt)
         self.assertIn("Invent task-specific roles", prompt)
+        self.assertIn("LAST-RESORT BUG REPORT", prompt)
+        self.assertIn('{"bug_report":"short actionable bug report"}', prompt)
+        self.assertIn("stem-agent will print it as an error and stop", prompt)
         self.assertIn('Return only JSON in the form {"next_node":"node_id"}', prompt)
+
+    def test_parse_architect_output_accepts_bug_report(self):
+        next_node, bug_report, errors = parse_architect_output(
+            '{"bug_report":"graph_path is not writable despite --add-dir"}'
+        )
+
+        self.assertIsNone(next_node)
+        self.assertEqual(bug_report, "graph_path is not writable despite --add-dir")
+        self.assertEqual(errors, [])
 
     def test_node_prompt_still_contains_execution_contract(self):
         graph = self.valid_graph()
@@ -667,6 +680,36 @@ class GraphTests(unittest.TestCase):
             ).run("task")
 
             self.assertEqual(outcome.error, "graph_validation_error")
+
+    def test_graph_runner_stops_on_architect_bug_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            log_path = os.path.join(tmpdir, "events.jsonl")
+            write_graph(graph_path, bootstrap_graph())
+            backend = FakeBackend(
+                [
+                    graph_turn(
+                        '{"bug_report":"graph_path is not writable despite --add-dir"}'
+                    )
+                ]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+                events_log=log_path,
+                architect_retries=2,
+            ).run("task")
+
+            self.assertEqual(
+                outcome.error,
+                "architect_bug_report:graph_path is not writable despite --add-dir",
+            )
+            self.assertEqual(backend.actions, [])
+            with open(log_path, encoding="utf-8") as handle:
+                events = [json.loads(line) for line in handle]
+            self.assertIn("architect_bug_report", [event["type"] for event in events])
+            self.assertNotIn("retry", [event["type"] for event in events])
 
     def test_graph_runner_adds_agents_dir_to_codex_sandbox(self):
         graph_path = Path("/tmp/project/.agents/graph.json")

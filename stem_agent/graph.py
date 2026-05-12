@@ -135,17 +135,22 @@ def parse_node_output(text: str, result_schema: dict[str, Any]) -> tuple[NodeOut
     return NodeOutput(route, result), []
 
 
-def parse_architect_output(text: str) -> tuple[str | None, list[str]]:
+def parse_architect_output(text: str) -> tuple[str | None, str | None, list[str]]:
     try:
         value = json.loads(text.strip())
     except json.JSONDecodeError as error:
-        return None, [f"architect output must be JSON: {error.msg}"]
+        return None, None, [f"architect output must be JSON: {error.msg}"]
     if not isinstance(value, dict):
-        return None, ["architect output must be a JSON object"]
+        return None, None, ["architect output must be a JSON object"]
+    bug_report = value.get("bug_report")
+    if bug_report is not None:
+        if not isinstance(bug_report, str) or not bug_report.strip():
+            return None, None, ["$.bug_report: must be a non-empty string"]
+        return None, bug_report.strip(), []
     next_node = value.get("next_node")
     if not isinstance(next_node, str) or not next_node:
-        return None, ["$.next_node: must be a non-empty string"]
-    return next_node, []
+        return None, None, ["$.next_node: must be a non-empty string"]
+    return next_node, None, []
 
 
 def build_node_prompt(
@@ -217,6 +222,12 @@ def build_architect_prompt(
             "- Do not run verification, build, install, browser, or test commands for the user's task.",
             "- If you are tempted to solve the task, create a worker node that solves it instead.",
             "",
+            "LAST-RESORT BUG REPORT",
+            "- If stem-agent, the sandbox, graph_path editing, or the graph contract behaves differently from these instructions and you cannot make progress safely, you may report a tool bug.",
+            "- This is only for failures in your own architect workflow or the surrounding tool, not for normal task difficulty, uncertainty, graph validation errors, or worker failures.",
+            "- Use this only as a last resort after graph repair or routing is not possible.",
+            "- If you return a bug report, stem-agent will print it as an error and stop the run immediately.",
+            "",
             "GRAPH DESIGN RULES",
             "- Prefer the smallest graph that can safely complete the task.",
             f"- Create up to {max_nodes} worker nodes.",
@@ -243,7 +254,8 @@ def build_architect_prompt(
             "",
             "OUTPUT CONTRACT",
             "- Edit graph_path directly so it is a valid version 1 graph.",
-            "- Return only JSON in the form {\"next_node\":\"node_id\"}.",
+            "- Normal success: Return only JSON in the form {\"next_node\":\"node_id\"}.",
+            "- Last-resort tool bug: Return only JSON in the form {\"bug_report\":\"short actionable bug report\"}.",
             "- Do not include explanation, markdown, or any other text in your final response.",
             "",
             "ARCHITECT-SPECIFIC PROMPT FROM GRAPH",

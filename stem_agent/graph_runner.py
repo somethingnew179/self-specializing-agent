@@ -302,6 +302,8 @@ class GraphRunner:
             )
             usage = usage + attempt_usage
             if error:
+                if error.startswith("architect_bug_report:"):
+                    return "", current_graph, usage, error
                 current_issue = "architect_failed"
                 current_errors = [error]
                 continue
@@ -372,7 +374,17 @@ class GraphRunner:
             self.events.write("architect_failed", attempt=attempt, error=missing_usage)
             return "", graph, turn.usage, missing_usage
 
-        next_node, output_errors = parse_architect_output(turn.last_text)
+        next_node, bug_report, output_errors = parse_architect_output(turn.last_text)
+        if bug_report:
+            error = f"architect_bug_report:{bug_report}"
+            self.events.write(
+                "architect_bug_report",
+                attempt=attempt,
+                bug_report=bug_report,
+                usage=turn.usage.__dict__,
+            )
+            return "", graph, turn.usage, error
+
         if output_errors or next_node is None:
             self.events.write(
                 "architect_failed",
