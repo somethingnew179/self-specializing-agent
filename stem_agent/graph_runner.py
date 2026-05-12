@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -199,11 +200,31 @@ class GraphRunner:
         return CodexExecBackend(
             model=settings.model or self.model,
             cd=self.cd,
-            sandbox=self.sandbox,
             skip_git_repo_check=self.skip_git_repo_check,
-            add_dirs=(str(self.graph_path.parent),),
+            config_overrides=self._codex_permission_overrides(),
             progress=SingleLineProgress(label) if self.console_log else None,
         )
+
+    def _codex_permission_overrides(self) -> tuple[str, str]:
+        project_root = self._project_root_for_permissions()
+        agents_dir = self.graph_path.parent
+        filesystem = ",".join(
+            [
+                f"{json.dumps(str(project_root))}=\"write\"",
+                f"{json.dumps(str(agents_dir))}=\"write\"",
+            ]
+        )
+        return (
+            'default_permissions="stem-agent-write"',
+            f"permissions.stem-agent-write={{filesystem={{{filesystem}}}}}",
+        )
+
+    def _project_root_for_permissions(self) -> Path:
+        if self.cd:
+            return Path(self.cd).expanduser().resolve()
+        if self.graph_path.parent.name == ".agents":
+            return self.graph_path.parent.parent
+        return self.graph_path.parent
 
     def _load_and_validate_graph(self) -> tuple[dict, list[str]]:
         try:

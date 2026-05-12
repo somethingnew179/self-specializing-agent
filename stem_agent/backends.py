@@ -25,7 +25,7 @@ class CodexExecConfig:
     cd: str | None = None
     sandbox: str | None = None
     skip_git_repo_check: bool = False
-    add_dirs: tuple[str, ...] = ()
+    config_overrides: tuple[str, ...] = ()
 
 
 class CodexExecBackend:
@@ -36,7 +36,7 @@ class CodexExecBackend:
         cd: str | None = None,
         sandbox: str | None = None,
         skip_git_repo_check: bool = False,
-        add_dirs: list[str] | tuple[str, ...] = (),
+        config_overrides: list[str] | tuple[str, ...] = (),
         progress: SingleLineProgress | None = None,
     ) -> None:
         self.config = CodexExecConfig(
@@ -44,7 +44,7 @@ class CodexExecBackend:
             cd=cd,
             sandbox=sandbox,
             skip_git_repo_check=skip_git_repo_check,
-            add_dirs=tuple(add_dirs),
+            config_overrides=tuple(config_overrides),
         )
         self.progress = progress
 
@@ -55,7 +55,6 @@ class CodexExecBackend:
             cd=getattr(args, "cd", None),
             sandbox=getattr(args, "sandbox", None),
             skip_git_repo_check=getattr(args, "skip_git_repo_check", False),
-            add_dirs=tuple(getattr(args, "add_dir", ()) or ()),
         )
 
     def build_codex_command(
@@ -70,7 +69,7 @@ class CodexExecBackend:
             cd=self.config.cd,
             sandbox=self.config.sandbox,
             skip_git_repo_check=self.config.skip_git_repo_check,
-            add_dirs=self.config.add_dirs,
+            config_overrides=self.config.config_overrides,
         )
 
     def run(self, prompt: str, session_id: str | None = None) -> TurnResult:

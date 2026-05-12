@@ -223,27 +223,27 @@ class StemAgentTests(unittest.TestCase):
             ],
         )
 
-    def test_build_fresh_codex_command_can_add_writable_dirs(self):
+    def test_build_fresh_codex_command_can_add_config_overrides(self):
         self.assertEqual(
             build_codex_command(
                 "hello",
                 cd="/tmp/x",
-                sandbox="workspace-write",
-                add_dirs=("/tmp/x/.agents", "/tmp/other"),
+                config_overrides=(
+                    'default_permissions="stem-agent-write"',
+                    'permissions.stem-agent-write={filesystem={"/tmp/x"="write","/tmp/x/.agents"="write"}}',
+                ),
                 skip_git_repo_check=True,
             ),
             [
                 "codex",
                 "exec",
                 "--json",
+                "-c",
+                'default_permissions="stem-agent-write"',
+                "-c",
+                'permissions.stem-agent-write={filesystem={"/tmp/x"="write","/tmp/x/.agents"="write"}}',
                 "--cd",
                 "/tmp/x",
-                "--sandbox",
-                "workspace-write",
-                "--add-dir",
-                "/tmp/x/.agents",
-                "--add-dir",
-                "/tmp/other",
                 "--skip-git-repo-check",
                 "hello",
             ],
@@ -508,11 +508,11 @@ class GraphTests(unittest.TestCase):
 
     def test_parse_architect_output_accepts_bug_report(self):
         next_node, bug_report, errors = parse_architect_output(
-            '{"bug_report":"graph_path is not writable despite --add-dir"}'
+            '{"bug_report":"graph_path is not writable"}'
         )
 
         self.assertIsNone(next_node)
-        self.assertEqual(bug_report, "graph_path is not writable despite --add-dir")
+        self.assertEqual(bug_report, "graph_path is not writable")
         self.assertEqual(errors, [])
 
     def test_node_prompt_still_contains_execution_contract(self):
@@ -689,7 +689,7 @@ class GraphTests(unittest.TestCase):
             backend = FakeBackend(
                 [
                     graph_turn(
-                        '{"bug_report":"graph_path is not writable despite --add-dir"}'
+                        '{"bug_report":"graph_path is not writable"}'
                     )
                 ]
             )
@@ -703,7 +703,7 @@ class GraphTests(unittest.TestCase):
 
             self.assertEqual(
                 outcome.error,
-                "architect_bug_report:graph_path is not writable despite --add-dir",
+                "architect_bug_report:graph_path is not writable",
             )
             self.assertEqual(backend.actions, [])
             with open(log_path, encoding="utf-8") as handle:
@@ -711,11 +711,12 @@ class GraphTests(unittest.TestCase):
             self.assertIn("architect_bug_report", [event["type"] for event in events])
             self.assertNotIn("retry", [event["type"] for event in events])
 
-    def test_graph_runner_adds_agents_dir_to_codex_sandbox(self):
-        graph_path = Path("/tmp/project/.agents/graph.json")
+    def test_graph_runner_uses_permission_profile_for_agents_dir(self):
+        project = Path("/tmp/project").resolve()
+        graph_path = project / ".agents" / "graph.json"
         runner = GraphRunner(
             graph_path,
-            cd="/tmp/project",
+            cd=str(project),
             sandbox="workspace-write",
             skip_git_repo_check=True,
         )
@@ -728,12 +729,17 @@ class GraphTests(unittest.TestCase):
                 "codex",
                 "exec",
                 "--json",
+                "-c",
+                'default_permissions="stem-agent-write"',
+                "-c",
+                (
+                    'permissions.stem-agent-write={filesystem={'
+                    f'{json.dumps(str(project))}="write",'
+                    f'{json.dumps(str(graph_path.resolve().parent))}="write"'
+                    "}}"
+                ),
                 "--cd",
-                "/tmp/project",
-                "--sandbox",
-                "workspace-write",
-                "--add-dir",
-                str(graph_path.resolve().parent),
+                str(project),
                 "--skip-git-repo-check",
                 "hello",
             ],
