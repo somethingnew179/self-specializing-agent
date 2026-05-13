@@ -109,14 +109,11 @@ class GraphRunner:
                 return self._finish(error=error, context=context, usage=usage)
             current = next_node
         else:
-            current = graph.get("start", "architect")
-
-        if current in {"architect", ARCHITECT_NODE} or not graph.get("nodes"):
             next_node, graph, architect_usage, error = self._call_architect_until_valid(
                 user_task,
                 context,
                 graph,
-                "bootstrap_or_architect_start",
+                "new_task_start",
                 [],
             )
             usage = usage + architect_usage

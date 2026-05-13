@@ -41,6 +41,10 @@ def final_validation_turn():
     return graph_turn('{"next_node":"__end__"}')
 
 
+def architect_start_turn(node="work"):
+    return graph_turn(json.dumps({"next_node": node}))
+
+
 class FakeBackend:
     def __init__(self, actions):
         self.actions = list(actions)
@@ -83,7 +87,10 @@ class ProgressFakeBackend:
 
     def run(self, prompt, session_id=None):
         if self.debug_label == "architect":
-            result = graph_turn('{"next_node":"__end__"}')
+            if '"issue": "final_validation"' in prompt:
+                result = graph_turn('{"next_node":"__end__"}')
+            else:
+                result = architect_start_turn()
         else:
             result = graph_turn('{"route":"done","result":{"summary":"ok"}}')
         if self.progress:
@@ -651,6 +658,9 @@ class GraphTests(unittest.TestCase):
         self.assertIn("Create up to 7 worker nodes", prompt)
         self.assertNotIn("usually 1-4 nodes", prompt)
         self.assertIn("Choose graph complexity based on task complexity", prompt)
+        self.assertIn("NEW TASK START MODE", prompt)
+        self.assertIn("When issue is new_task_start", prompt)
+        self.assertIn("do not blindly reuse an old structure", prompt)
         self.assertIn("FINAL VALIDATION MODE", prompt)
         self.assertIn("When issue is final_validation", prompt)
         self.assertIn("programmer, designer, researcher, tester", prompt)
@@ -737,6 +747,7 @@ class GraphTests(unittest.TestCase):
             write_graph(graph_path, self.valid_graph())
             backend = FakeBackend(
                 [
+                    architect_start_turn(),
                     graph_turn('{"route":"done","result":{"summary":"ok"}}'),
                     final_validation_turn(),
                 ]
@@ -751,6 +762,7 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(outcome.stop_reason, "graph_finished")
             self.assertIsNone(outcome.error)
             self.assertEqual(outcome.context[-1]["result"], {"summary": "ok"})
+            self.assertIn('"issue": "new_task_start"', backend.prompts[0])
             with open(log_path, encoding="utf-8") as handle:
                 events = [json.loads(line) for line in handle]
             self.assertIn("node_called", [event["type"] for event in events])
@@ -842,6 +854,7 @@ class GraphTests(unittest.TestCase):
             write_graph(graph_path, graph)
             backend = FakeBackend(
                 [
+                    architect_start_turn(),
                     graph_turn('{"route":"unknown","result":{"summary":"bad route"}}'),
                     graph_turn('{"next_node":"finish"}'),
                     graph_turn('{"route":"done","result":{"summary":"fixed"}}'),
@@ -876,6 +889,7 @@ class GraphTests(unittest.TestCase):
             write_graph(graph_path, graph)
             backend = FakeBackend(
                 [
+                    architect_start_turn(),
                     graph_turn('{"route":"done","result":{"summary":"first"}}'),
                     graph_turn('{"next_node":"fix"}'),
                     graph_turn('{"route":"done","result":{"summary":"fixed"}}'),
@@ -1038,6 +1052,7 @@ class GraphTests(unittest.TestCase):
             write_graph(graph_path, self.valid_graph())
             fake_backend = FakeBackend(
                 [
+                    architect_start_turn(),
                     graph_turn('{"route":"done","result":{"summary":"ok"}}'),
                     final_validation_turn(),
                 ]
