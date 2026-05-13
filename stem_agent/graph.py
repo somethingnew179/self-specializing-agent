@@ -9,6 +9,7 @@ from .json_schema import check_schema, validate_instance
 
 ARCHITECT_NODE = "__architect__"
 END_NODE = "__end__"
+DEFAULT_MODEL = "gpt-5.5"
 
 ARCHITECT_BOOTSTRAP_PROMPT = (
     "You are the Architect of a stem-agent graph. You do not execute the "
@@ -35,7 +36,7 @@ def bootstrap_graph(model: str | None = None) -> dict[str, Any]:
         "version": 1,
         "start": "architect",
         "architect": {
-            "model": model or "gpt-5.2",
+            "model": model or DEFAULT_MODEL,
             "effort": "high",
             "prompt": ARCHITECT_BOOTSTRAP_PROMPT,
         },
@@ -263,7 +264,7 @@ def build_architect_prompt(
             "",
             "WORKER NODE TEMPLATE",
             "{",
-            "  \"model\": \"gpt-5.2\",",
+            f"  \"model\": \"{DEFAULT_MODEL}\",",
             "  \"effort\": \"medium\",",
             "  \"prompt\": \"Tell the worker exactly what to do and which route words it may return.\",",
             "  \"result_schema\": {",

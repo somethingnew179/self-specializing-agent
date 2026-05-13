@@ -198,7 +198,7 @@ class StemAgentTests(unittest.TestCase):
         self.assertEqual(
             build_codex_command(
                 "hello",
-                model="gpt-5.2",
+                model="gpt-5.5",
                 cd="/tmp/x",
                 sandbox="read-only",
             ),
@@ -207,7 +207,7 @@ class StemAgentTests(unittest.TestCase):
                 "exec",
                 "--json",
                 "--model",
-                "gpt-5.2",
+                "gpt-5.5",
                 "--cd",
                 "/tmp/x",
                 "--sandbox",
@@ -284,7 +284,7 @@ class StemAgentTests(unittest.TestCase):
             build_codex_command(
                 "hello",
                 "session-1",
-                model="gpt-5.2",
+                model="gpt-5.5",
                 cd="/tmp/x",
                 sandbox="read-only",
                 config_overrides=('default_permissions="stem-agent-write"',),
@@ -298,7 +298,7 @@ class StemAgentTests(unittest.TestCase):
                 "-c",
                 'default_permissions="stem-agent-write"',
                 "--model",
-                "gpt-5.2",
+                "gpt-5.5",
                 "--skip-git-repo-check",
                 "session-1",
                 "hello",
@@ -310,7 +310,7 @@ class StemAgentTests(unittest.TestCase):
             build_codex_command(
                 "hello",
                 "session-1",
-                model="gpt-5.2",
+                model="gpt-5.5",
                 auto_review=True,
                 config_overrides=('default_permissions="stem-agent-write"',),
                 skip_git_repo_check=True,
@@ -325,7 +325,7 @@ class StemAgentTests(unittest.TestCase):
                 "-c",
                 'default_permissions="stem-agent-write"',
                 "--model",
-                "gpt-5.2",
+                "gpt-5.5",
                 "--skip-git-repo-check",
                 "session-1",
                 "hello",
@@ -601,13 +601,13 @@ class GraphTests(unittest.TestCase):
             "version": 1,
             "start": "work",
             "architect": {
-                "model": "gpt-5.2",
+                "model": "gpt-5.5",
                 "effort": "high",
                 "prompt": "Fix the graph.",
             },
             "nodes": {
                 "work": {
-                    "model": "gpt-5.2",
+                    "model": "gpt-5.5",
                     "effort": "medium",
                     "prompt": "Do the work.",
                     "result_schema": {
