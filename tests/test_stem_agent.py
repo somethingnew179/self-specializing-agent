@@ -658,6 +658,8 @@ class GraphTests(unittest.TestCase):
         self.assertIn("Create up to 7 worker nodes", prompt)
         self.assertNotIn("usually 1-4 nodes", prompt)
         self.assertIn("Choose graph complexity based on task complexity", prompt)
+        self.assertIn("save_memory defaults to true", prompt)
+        self.assertIn("Set save_memory false for testers", prompt)
         self.assertIn("DECOMPOSITION STRATEGY", prompt)
         self.assertIn("many small worker runs", prompt)
         self.assertIn("one solve-all worker", prompt)
@@ -698,6 +700,7 @@ class GraphTests(unittest.TestCase):
         self.assertIn('"user_task":', prompt)
         self.assertIn('"allowed_routes":', prompt)
         self.assertIn('"result_schema":', prompt)
+        self.assertIn('"save_memory": true', prompt)
         self.assertIn('"context":', prompt)
         self.assertIn("Return only one JSON object", prompt)
 
@@ -716,6 +719,14 @@ class GraphTests(unittest.TestCase):
         errors = validate_graph(graph)
 
         self.assertTrue(any("unsupported JSON Schema type" in error for error in errors))
+
+    def test_graph_validation_rejects_bad_save_memory(self):
+        graph = self.valid_graph()
+        graph["nodes"]["work"]["save_memory"] = "yes"
+
+        errors = validate_graph(graph)
+
+        self.assertTrue(any(".save_memory: must be a boolean" in error for error in errors))
 
     def test_parse_node_output_validates_result_schema(self):
         schema = {
@@ -839,8 +850,83 @@ class GraphTests(unittest.TestCase):
             self.assertEqual(second.stop_reason, "graph_finished")
             self.assertEqual(
                 second_backend.sessions,
-                ["architect-session-1", None, "architect-session-1"],
+                ["architect-session-1", "session", "architect-session-1"],
             )
+
+    def test_graph_runner_reuses_node_session_by_default(self):
+        graph = self.valid_graph()
+        graph["nodes"]["work"]["routes"] = {"again": "work", "done": END_NODE}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            write_graph(graph_path, graph)
+            backend = FakeBackend(
+                [
+                    architect_start_turn(),
+                    TurnResult(
+                        "work-session-1",
+                        '{"route":"again","result":{"summary":"first"}}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
+                    TurnResult(
+                        "work-session-1",
+                        '{"route":"done","result":{"summary":"second"}}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
+                    final_validation_turn(),
+                ]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+            ).run("task")
+
+            self.assertEqual(outcome.stop_reason, "graph_finished")
+            self.assertEqual(
+                backend.sessions,
+                [None, None, "work-session-1", "session"],
+            )
+            with (Path(tmpdir) / "node_sessions.json").open(encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), {"work": "work-session-1"})
+
+    def test_graph_runner_can_disable_node_session_memory(self):
+        graph = self.valid_graph()
+        graph["nodes"]["work"]["save_memory"] = False
+        graph["nodes"]["work"]["routes"] = {"again": "work", "done": END_NODE}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            graph_path = os.path.join(tmpdir, "graph.json")
+            write_graph(graph_path, graph)
+            backend = FakeBackend(
+                [
+                    architect_start_turn(),
+                    TurnResult(
+                        "work-session-1",
+                        '{"route":"again","result":{"summary":"first"}}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
+                    TurnResult(
+                        "work-session-2",
+                        '{"route":"done","result":{"summary":"second"}}',
+                        Usage(output_tokens=1, total_tokens=1),
+                        True,
+                    ),
+                    final_validation_turn(),
+                ]
+            )
+
+            outcome = GraphRunner(
+                graph_path,
+                backend_factory=lambda settings: backend,
+            ).run("task")
+
+            self.assertEqual(outcome.stop_reason, "graph_finished")
+            self.assertEqual(backend.sessions, [None, None, None, "session"])
+            self.assertFalse((Path(tmpdir) / "node_sessions.json").exists())
 
     def test_graph_runner_calls_architect_on_invalid_node_output(self):
         graph = self.valid_graph()

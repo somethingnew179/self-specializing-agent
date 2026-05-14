@@ -170,6 +170,7 @@ def build_node_prompt(
             "model": node.get("model"),
             "effort": node.get("effort"),
             "params": node.get("params", {}),
+            "save_memory": node.get("save_memory", True),
         },
         "result_schema": node["result_schema"],
         "allowed_routes": allowed_routes,
@@ -272,7 +273,10 @@ def build_architect_prompt(
             "- architect must be an object with prompt and optional model, effort, params.",
             "- nodes must be an object whose keys are worker node ids.",
             "- Every worker node must contain prompt, result_schema, and routes.",
-            "- model, effort, and params are optional per worker node.",
+            "- model, effort, params, and save_memory are optional per worker node.",
+            "- save_memory defaults to true. It reuses the same model session for the same worker node id.",
+            "- Keep save_memory true for planners, implementers, debuggers, optimizers, and other workers that benefit from continuity.",
+            "- Set save_memory false for testers, reviewers, critics, scorers, or adversarial validators when fresh independent judgment matters.",
             "- routes is a top-level node field. It is required and must be a non-empty object.",
             "- routes maps the route word returned by the worker to the next node id.",
             f"- Every routes target must be an existing worker node id, {ARCHITECT_NODE}, or {END_NODE}.",
@@ -282,6 +286,7 @@ def build_architect_prompt(
             "{",
             f"  \"model\": \"{DEFAULT_MODEL}\",",
             "  \"effort\": \"medium\",",
+            "  \"save_memory\": true,",
             "  \"prompt\": \"Tell the worker exactly what to do and which route words it may return.\",",
             "  \"result_schema\": {",
             "    \"type\": \"object\",",
@@ -378,4 +383,10 @@ def _validate_agent_settings(
         errors.append(f"{path}.effort: must be a string")
     if "params" in value and value["params"] is not None and not isinstance(value["params"], dict):
         errors.append(f"{path}.params: must be an object")
+    if (
+        "save_memory" in value
+        and value["save_memory"] is not None
+        and not isinstance(value["save_memory"], bool)
+    ):
+        errors.append(f"{path}.save_memory: must be a boolean")
     return errors

@@ -56,6 +56,7 @@ class GraphRunner:
     ) -> None:
         self.graph_path = Path(graph_path).resolve()
         self.architect_session_path = self.graph_path.parent / "architect_session.json"
+        self.node_sessions_path = self.graph_path.parent / "node_sessions.json"
         self.events = JsonlEventLog(events_log)
         self.debug_log = debug_log if isinstance(debug_log, DebugLog) else DebugLog(debug_log)
         self.model = model
@@ -71,6 +72,8 @@ class GraphRunner:
         self.auto_review = auto_review
         self._architect_session_loaded = False
         self._architect_session_id: str | None = None
+        self._node_sessions_loaded = False
+        self._node_sessions: dict[str, str] = {}
 
     def run(self, user_task: str) -> GraphRunOutcome:
         context: list[dict] = []
@@ -79,6 +82,7 @@ class GraphRunner:
             "graph_run_started",
             graph_path=str(self.graph_path),
             architect_session_path=str(self.architect_session_path),
+            node_sessions_path=str(self.node_sessions_path),
             user_task=user_task,
             model=self.model,
             cd=self.cd,
@@ -348,6 +352,8 @@ class GraphRunner:
         context: list[dict],
     ) -> tuple[dict | None, Usage, str | None]:
         settings = parse_agent_settings(node)
+        save_memory = node.get("save_memory", True)
+        node_session_id = self._load_node_session_id(node_id) if save_memory else None
         prompt = build_node_prompt(
             user_task=user_task,
             node_id=node_id,
@@ -360,7 +366,9 @@ class GraphRunner:
             model=settings.model or self.model,
             effort=settings.effort,
             params=settings.params,
+            save_memory=save_memory,
             routes=sorted(node["routes"].keys()),
+            session_id=node_session_id,
         )
         self.debug_log.write(
             "node_called",
@@ -368,15 +376,23 @@ class GraphRunner:
             model=settings.model or self.model,
             effort=settings.effort,
             params=settings.params,
+            save_memory=save_memory,
             routes=sorted(node["routes"].keys()),
+            session_id=node_session_id,
             prompt=prompt,
         )
         try:
-            turn = self._backend_for(settings, f"node:{node_id}").run(prompt)
+            turn = self._backend_for(settings, f"node:{node_id}").run(
+                prompt,
+                node_session_id,
+            )
         except RuntimeError as error:
             self.events.write("node_failed", node=node_id, error=str(error))
             self.debug_log.write("node_failed", node=node_id, error=str(error))
             return None, Usage(), str(error)
+
+        if save_memory:
+            self._save_node_session_id(node_id, turn.session_id or node_session_id)
 
         missing_usage = self._missing_usage_error(turn)
         if missing_usage:
@@ -672,5 +688,79 @@ class GraphRunner:
         self.debug_log.write(
             "architect_session_saved",
             path=str(self.architect_session_path),
+            session_id=session_id,
+        )
+
+    def _load_node_sessions(self) -> dict[str, str]:
+        if self._node_sessions_loaded:
+            return self._node_sessions
+        self._node_sessions_loaded = True
+        try:
+            with self.node_sessions_path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+        except FileNotFoundError:
+            self.debug_log.write(
+                "node_sessions_missing",
+                path=str(self.node_sessions_path),
+            )
+            return self._node_sessions
+        except (OSError, ValueError) as error:
+            self.debug_log.write(
+                "node_sessions_load_failed",
+                path=str(self.node_sessions_path),
+                error=str(error),
+            )
+            return self._node_sessions
+
+        if not isinstance(value, dict):
+            self.debug_log.write(
+                "node_sessions_load_failed",
+                path=str(self.node_sessions_path),
+                error="root must be an object",
+            )
+            return self._node_sessions
+        self._node_sessions = {
+            key: session_id.strip()
+            for key, session_id in value.items()
+            if isinstance(key, str)
+            and isinstance(session_id, str)
+            and session_id.strip()
+        }
+        self.debug_log.write(
+            "node_sessions_loaded",
+            path=str(self.node_sessions_path),
+            node_ids=sorted(self._node_sessions),
+        )
+        return self._node_sessions
+
+    def _load_node_session_id(self, node_id: str) -> str | None:
+        session_id = self._load_node_sessions().get(node_id)
+        if session_id:
+            self.debug_log.write(
+                "node_session_loaded",
+                path=str(self.node_sessions_path),
+                node=node_id,
+                session_id=session_id,
+            )
+        return session_id
+
+    def _save_node_session_id(self, node_id: str, session_id: str | None) -> None:
+        if not session_id:
+            return
+        session_id = session_id.strip()
+        if not session_id:
+            return
+        sessions = self._load_node_sessions()
+        if sessions.get(node_id) == session_id and self.node_sessions_path.exists():
+            return
+        sessions[node_id] = session_id
+        self.node_sessions_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.node_sessions_path.open("w", encoding="utf-8") as handle:
+            json.dump(sessions, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        self.debug_log.write(
+            "node_session_saved",
+            path=str(self.node_sessions_path),
+            node=node_id,
             session_id=session_id,
         )
